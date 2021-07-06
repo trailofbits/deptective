@@ -18,7 +18,7 @@ setup(
     version="0.0.1",
     packages=find_packages(exclude=["test"]),
     python_requires=">=3.7",
-    install_requires=[python-ptrace
+    install_requires=["python-ptrace",
     ],
     extras_require={
         "dev": ["flake8", "twine", "mypy>=0.812"]
