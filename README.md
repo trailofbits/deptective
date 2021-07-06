@@ -4,19 +4,25 @@
 `apt-trace` let you install dependencies of an arbitrary binary on the fly. 
 
 ## Quickstart 🚀
-
 ```commandline
 $ python setup.py install
 ```
 
 ### Running it 🏃
-You simply point it to a repository:
+You simply point it to your executable:
 ```console
-$ apt-trace $yourbinary
+$ apt-trace $yourexe
 ```
 
 ### apt-trace depends on.. 🎭
-python-ptrace
+A python package: python-ptrace and a some ubuntu packages: sudo, apt-file
+```commandline
+$ apt install python3
+$ apt install python3-setuptools
+$ apt install apt-file
+$ apt install sudo
+$ apt-file update
+```
 
 ## Development 👷
 ```commandline

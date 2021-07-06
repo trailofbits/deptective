@@ -25,8 +25,8 @@ def apt_isinstalled(package):
 def file_to_packages(filename: str, arch: str = "amd64") -> str:
     if arch not in ("amd64", "i386"):
         raise ValueError("Only amd64 and i386 supported")
-    logger.debug(f'Running [{" ".join(["apt-file", "-x", "search", filename])}]')
-    contents = subprocess.run(["apt-file", "-x", "search", filename],
+    logger.debug(f'Running [{" ".join(["apt-file", "search", "-F", filename])}]')
+    contents = subprocess.run(["apt-file", "search", "-F", filename],
                               stdout=subprocess.PIPE).stdout.decode("utf8")
     db: Dict[str, str] = {}
     selected = None
@@ -209,20 +209,26 @@ class Shell(cmd.Cmd):
         self.packages = packages
         self.intro = f'Found {len(self.packages)} packages for filename {self.filename}. What do I do?\n'\
                      f'Type help or ? to list commands.\n'
+        if len(self.packages) < 20:
+            self.do_list()
 
         super().__init__(*args, **kwargs)
 
-    def do_list(self, arg):
+
+    def do_list(self, arg=None):
         'List all potentials'
-        for i, package in enumerate(self.packages):
-            print (f"{i:3d}: {package}")
+        print (output)
 
     def do_filename(self, arg):
         'List current filename'
         print (self.filename)
 
     def do_install(self, arg):
-        'Install a package: INSTALL gdb'
+        'Install a package: INSTALL gdb #(or the package number in the list)'
+        try:
+            arg = self.packages[int(arg.strip())]
+        except:
+            pass
         apt_install(arg)
 
     def do_isinstalled(self, arg):
