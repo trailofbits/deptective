@@ -271,7 +271,7 @@ class Shell(cmd.Cmd):
             pass
         apt_install(arg)
         #remove recently installed package from potential list
-        self.packages = [pkg for pkg in packages if pkg != arg.strip()]
+        self.packages = [pkg for pkg in self.packages if pkg != arg.strip()]
         return not self.packages #if not more packages continue
 
     def do_isinstalled(self, arg):
