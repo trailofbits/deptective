@@ -13,6 +13,7 @@ from ptrace.tools import signal_to_exitcode
 import logging
 import os
 import functools
+from typing import Optional, Dict
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
