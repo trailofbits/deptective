@@ -12,9 +12,11 @@ from ptrace.error import PTRACE_ERRORS, writeError
 from ptrace.tools import signal_to_exitcode
 import logging
 import os
+import functools
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
-
+@functools.cache
 def apt_install(package):
     subprocess.run(["sudo", "apt", "-y", "install", package], stderr=subprocess.DEVNULL)
     return True
@@ -22,6 +24,7 @@ def apt_install(package):
 def apt_isinstalled(package):
     return 'installed' in subprocess.run(["apt", "-qq", "list", package], stderr=subprocess.DEVNULL, stdout=subprocess.PIPE).stdout.decode("utf8")
 
+@functools.cache
 def file_to_packages(filename: str, arch: str = "amd64") -> str:
     if arch not in ("amd64", "i386"):
         raise ValueError("Only amd64 and i386 supported")
@@ -38,6 +41,31 @@ def file_to_packages(filename: str, arch: str = "amd64") -> str:
     return frozenset(db.values())
 
 
+def cached_file_to_packages(filename: str, file_to_package_cache: Optional[Dict[str, tuple[str]]] = None) -> str:
+    # file_to_package_cache contains all the files that are provided be previous
+    # dependencies. If a file pattern is already sastified by current files
+    # use the package already included as a dependency
+    if file_to_package_cache is not None:
+        if filename in file_to_package_cache:
+            return file_to_package_cache[filename]
+
+    packages = file_to_packages(filename)
+
+    # a new package is chosen add all the files it provides to our cache
+    # uses `apt-file` command line tool
+    if file_to_package_cache is not None:
+        for package in packages:
+            contents = subprocess.run(["apt-file", "list", package],
+                                      stdout=subprocess.PIPE).stdout.decode("utf8")
+            for line in contents.split("\n"):
+                if ":" not in line:
+                    break
+                package_i, filename_i = line.split(": ")
+                file_to_package_cache[filename_i] = file_to_package_cache.get(filename_i, ()) + (package_i,)
+
+    return packages
+
+
 class SyscallTracer(Application):
 
     def __init__(self):
@@ -46,6 +74,7 @@ class SyscallTracer(Application):
         self.parseOptions()
         # Setup output (log)
         self.setupLog()
+        self.cache={}
 
     def setupLog(self):
         self._output = None
@@ -118,11 +147,20 @@ class SyscallTracer(Application):
                 for argument in syscall.arguments:
                     if argument.name not in FILENAME_ARGUMENTS:
                         continue
-                    data, truncated = argument.function.process.readCString(
-                        argument.value, 1024)
+                    try:
+                        data, truncated = argument.function.process.readCString(
+                            argument.value, 1024)
+                    except:
+                        data = ""
                     filename = os.path.abspath(os.fsdecode(data))
-                    if not filename.startswith("/home") and not os.path.exists(filename):
+                    if not filename.startswith("/home") and \
+                        not filename.startswith("/usr/local") and \
+                        not filename.startswith("/tmp") and \
+                        filename.startswith("/") and \
+                        not os.path.exists(filename):
                         packages = file_to_packages(filename)
+                        #packages = () #cached_file_to_packages(filename, self.cache)
+                        packages = [pkg for pkg in packages if pkg not in done_packages]
                         if packages:
                             Shell(filename=filename, packages=packages).cmdloop()
 
@@ -198,6 +236,7 @@ class SyscallTracer(Application):
 
 import cmd, sys
 
+done_packages = set()
 class Shell(cmd.Cmd):
     prompt = '(apt-trace) '
     file = None
@@ -214,10 +253,10 @@ class Shell(cmd.Cmd):
 
         super().__init__(*args, **kwargs)
 
-
     def do_list(self, arg=None):
         'List all potentials'
-        print (output)
+        for i, package in enumerate(self.packages):
+            print (f"{i:3d}: {package}")
 
     def do_filename(self, arg):
         'List current filename'
@@ -230,6 +269,9 @@ class Shell(cmd.Cmd):
         except:
             pass
         apt_install(arg)
+        #remove recently installed package from potential list
+        self.packages = [pkg for pkg in packages if pkg != arg.strip()]
+        return not self.packages #if not more packages continue
 
     def do_isinstalled(self, arg):
         'Check if a package is installed: ISINSTALLED gdb'
@@ -237,6 +279,8 @@ class Shell(cmd.Cmd):
 
     def do_continue(self, arg):
         'Continue Execution of inferior'
+        global done_packages
+        done_packages = done_packages.union(self.packages)
         return True
 
     def _complete_with_potentials(self, text, line, begidx, endidx):
