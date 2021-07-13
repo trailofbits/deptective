@@ -9,19 +9,33 @@ from optparse import OptionParser
 from logging import getLogger, error
 from ptrace.error import PTRACE_ERRORS, writeError
 from ptrace.tools import signal_to_exitcode
-import cmd, sys
+import cmd
+import sys
 import logging
 import os
 import functools
-from typing import Optional, Dict
+import shutil
+from typing import Optional, Dict, List
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 
+is_root = os.getuid() == 0
+
+
+def run_as_root(command: List[str]) -> subprocess.CompletedProcess:
+    if not is_root:
+        if shutil.which("sudo") is None:
+            raise ValueError("this command must either be run as root or `sudo` must be installed and in the PATH")
+        sudo_prefix = ["sudo"]
+    else:
+        sudo_prefix = []
+    return subprocess.run(sudo_prefix + command, stderr=subprocess.DEVNULL)
+
+
 @functools.cache
 def apt_install(package):
-    subprocess.run(["sudo", "apt", "-y", "install", package], stderr=subprocess.DEVNULL)
-    return True
+    return run_as_root(["apt", "-y", "install", package]).returncode == 0
 
 
 def apt_isinstalled(package):
@@ -241,6 +255,7 @@ class SyscallTracer(Application):
 
 done_packages = set()
 
+
 class Shell(cmd.Cmd):
     prompt = '(apt-trace) '
     file = None
@@ -297,5 +312,6 @@ class Shell(cmd.Cmd):
         if line == "EOF" or len(line) == 0:
             return True
         self.stdout.write('[-] Unknown command: %r\n' % (line,))
+
 
 main = SyscallTracer().main
