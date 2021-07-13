@@ -92,7 +92,7 @@ class SyscallTracer(Application):
         self.parseOptions()
         # Setup output (log)
         self.setupLog()
-        self.cache={}
+        self.cache = {}
 
     def setupLog(self):
         self._output = None
@@ -103,6 +103,10 @@ class SyscallTracer(Application):
             usage="%prog [options] -- program [arg1 arg2 ...]")
         self.createCommonOptions(parser)
         self.createLogOptions(parser)
+        parser.add_option("--auto", "-a",
+                          help="Do not prompt for whether to install dependencies; automatically try all options "
+                               "(this is the default if not run from a TTY)",
+                          action="store_true", default=not sys.stdin.isatty() or not sys.stdout.isatty())
         self.options, self.program = parser.parse_args()
 
         # Create "only" filter
@@ -171,16 +175,21 @@ class SyscallTracer(Application):
                     except:
                         data = ""
                     filename = os.path.abspath(os.fsdecode(data))
-                    if not filename.startswith("/home") and \
-                        not filename.startswith("/usr/local") and \
-                        not filename.startswith("/tmp") and \
-                        filename.startswith("/") and \
-                        not os.path.exists(filename):
+                    if not (
+                            filename.startswith("/home") or
+                            filename.startswith("/usr/local") or
+                            filename.startswith("/tmp") or
+                            filename.startswith("/") or
+                            os.path.exists(filename)
+                    ):
                         packages = file_to_packages(filename)
                         #packages = () #cached_file_to_packages(filename, self.cache)
                         packages = [pkg for pkg in packages if pkg not in done_packages]
                         if packages:
-                            Shell(filename=filename, packages=packages).cmdloop()
+                            if self.options.auto:
+                                raise NotImplementedError("TODO: Implement automatic mode")
+                            else:
+                                Shell(filename=filename, packages=packages).cmdloop()
 
         # Break at next syscall
         process.syscall()
