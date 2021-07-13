@@ -17,7 +17,6 @@ import functools
 import shutil
 from typing import Optional, Dict, List
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
 is_root = os.getuid() == 0
@@ -175,12 +174,11 @@ class SyscallTracer(Application):
                     except:
                         data = ""
                     filename = os.path.abspath(os.fsdecode(data))
-                    if not (
+                    if filename.startswith("/") and not (
+                            os.path.exists(filename) or
                             filename.startswith("/home") or
                             filename.startswith("/usr/local") or
-                            filename.startswith("/tmp") or
-                            filename.startswith("/") or
-                            os.path.exists(filename)
+                            filename.startswith("/tmp")
                     ):
                         packages = file_to_packages(filename)
                         #packages = () #cached_file_to_packages(filename, self.cache)
@@ -253,7 +251,7 @@ class SyscallTracer(Application):
             error("Interrupted.")
             exitcode = 1
         except PTRACE_ERRORS as err:
-            writeError(getLogger(), err, "Debugger error")
+            writeError(logger, err, "Debugger error")
             exitcode = 1
         self.debugger.quit()
         return exitcode
