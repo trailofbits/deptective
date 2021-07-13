@@ -2,14 +2,14 @@ import subprocess
 from ptrace import PtraceError
 from ptrace.debugger import (PtraceDebugger, Application,
                              ProcessExit, ProcessSignal, NewProcessEvent, ProcessExecution)
-from ptrace.syscall import (SYSCALL_NAMES, SYSCALL_PROTOTYPES,
-                            FILENAME_ARGUMENTS, SOCKET_SYSCALL_NAMES)
+from ptrace.syscall import SYSCALL_PROTOTYPES, FILENAME_ARGUMENTS
 from ptrace.func_call import FunctionCallOptions
 from sys import stderr
 from optparse import OptionParser
 from logging import getLogger, error
 from ptrace.error import PTRACE_ERRORS, writeError
 from ptrace.tools import signal_to_exitcode
+import cmd, sys
 import logging
 import os
 import functools
@@ -17,13 +17,16 @@ from typing import Optional, Dict
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
+
 @functools.cache
 def apt_install(package):
     subprocess.run(["sudo", "apt", "-y", "install", package], stderr=subprocess.DEVNULL)
     return True
 
+
 def apt_isinstalled(package):
     return 'installed' in subprocess.run(["apt", "-qq", "list", package], stderr=subprocess.DEVNULL, stdout=subprocess.PIPE).stdout.decode("utf8")
+
 
 @functools.cache
 def file_to_packages(filename: str, arch: str = "amd64") -> str:
@@ -235,9 +238,9 @@ class SyscallTracer(Application):
     def createChild(self, program):
         return Application.createChild(self, program)
 
-import cmd, sys
 
 done_packages = set()
+
 class Shell(cmd.Cmd):
     prompt = '(apt-trace) '
     file = None
