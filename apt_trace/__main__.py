@@ -17,7 +17,7 @@ import functools
 import shutil
 from typing import Optional, Dict, List
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 
 is_root = os.getuid() == 0
@@ -146,7 +146,7 @@ class SyscallTracer(Application):
                     exitcode = event.exitcode
                 continue
             except ProcessSignal as event:
-                event.display()
+                event.display(log=logger.debug)
                 event.process.syscall(event.signum)
                 exitcode = signal_to_exitcode(event.signum)
                 continue
