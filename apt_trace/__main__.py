@@ -15,7 +15,7 @@ from ptrace.syscall import SYSCALL_PROTOTYPES, FILENAME_ARGUMENTS
 from ptrace.func_call import FunctionCallOptions
 from sys import stderr
 from optparse import OptionParser
-from logging import getLogger, error
+from logging import error
 from ptrace.error import PTRACE_ERRORS, writeError
 from ptrace.tools import signal_to_exitcode
 import cmd
@@ -38,6 +38,7 @@ def run_as_root(command: List[str]) -> subprocess.CompletedProcess:
     else:
         sudo_prefix = []
     return subprocess.run(sudo_prefix + command, stderr=subprocess.DEVNULL)
+
 
 APP_DIRS = AppDirs("apt-trace", "Trail of Bits")
 CACHE_DIR = Path(APP_DIRS.user_cache_dir)
@@ -70,6 +71,7 @@ def dump_databases():
 load_databases()
 #import atexit
 #atexit.register(dump_databases)
+
 
 @functools.cache
 def apt_install(package):
@@ -160,6 +162,10 @@ class SyscallTracer(Application):
                           help="Do not prompt for whether to install dependencies; automatically try all options "
                                "(this is the default if not run from a TTY)",
                           action="store_true", default=not sys.stdin.isatty() or not sys.stdout.isatty())
+        parser.add_option("--auto-install-single", "-s",
+                          help="If there is a single APT package that satisfies a missing file, install it "
+                               "automatically, but if there are multiple possibilities then prompt the user",
+                          action="store_true")
         self.options, self.program = parser.parse_args()
 
         # Create "only" filter
@@ -240,6 +246,13 @@ class SyscallTracer(Application):
                         if packages:
                             if self.options.auto:
                                 raise NotImplementedError("TODO: Implement automatic mode")
+                            elif self.options.auto_install_single and len(packages) == 1:
+                                # automatically install this package
+                                if not apt_install(packages[0].strip()):
+                                    logger.warning(f"Error auto-installing package {packages[0]}!")
+                                    Shell(filename=filename, packages=packages).cmdloop()
+                                else:
+                                    logger.info(f"Automatically installed dependency {packages[0]}")
                             else:
                                 Shell(filename=filename, packages=packages).cmdloop()
 
