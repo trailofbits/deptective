@@ -24,7 +24,7 @@ import logging
 import os
 import functools
 import shutil
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Set
 logger = logging.getLogger(__name__)
 
 is_root = os.getuid() == 0
