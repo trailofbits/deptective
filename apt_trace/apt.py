@@ -7,7 +7,7 @@ from pathlib import Path
 import pickle
 import shutil
 import subprocess
-from typing import Dict, List, Optional, Set, Union
+from typing import Dict, List, Set, Union, Tuple
 
 from appdirs import AppDirs
 
@@ -69,11 +69,13 @@ def apt_install(package):
 
 
 def apt_isinstalled(package):
-    return 'installed' in subprocess.run(["apt", "-qq", "list", package], stderr=subprocess.DEVNULL, stdout=subprocess.PIPE).stdout.decode("utf8")
+    return 'installed' in subprocess.run(
+        ["apt", "-qq", "list", package], stderr=subprocess.DEVNULL, stdout=subprocess.PIPE
+    ).stdout.decode("utf8")
 
 
 @functools.lru_cache(maxsize=128)
-def file_to_packages(filename: Union[str, bytes, Path], arch: str = "amd64"):
+def file_to_packages(filename: Union[str, bytes, Path], arch: str = "amd64") -> Tuple[str, ...]:
     """
     Downloads and uses apt-file database directly
     # http://security.ubuntu.com/ubuntu/dists/focal-security/Contents-amd64.gz
@@ -81,11 +83,16 @@ def file_to_packages(filename: Union[str, bytes, Path], arch: str = "amd64"):
     """
     if arch not in ("amd64", "i386"):
         raise ValueError("Only amd64 and i386 supported")
+    logger.debug(f"searching for packages associated with {filename!r}")
     # ensure that the filename is a byte string:
-    if isinstance(filename, str):
-        filename = filename.encode("utf-8")
-    elif isinstance(filename, Path):
-        filename = str(filename).encode("utf-8")
+    try:
+        if isinstance(filename, str):
+            filename = filename.encode("utf-8")
+        elif isinstance(filename, Path):
+            filename = str(filename).encode("utf-8")
+    except UnicodeEncodeError:
+        logger.warning(f"File {filename!r} cannot be encoded in UTF-8; skipping")
+        return ()
     global updated
     dump = False
     if not updated:
@@ -106,5 +113,5 @@ def file_to_packages(filename: Union[str, bytes, Path], arch: str = "amd64"):
         if dump:
             dump_databases()
     result = tuple(contents_db.get(filename, set()))
-    logger.info(f"searching {filename!r} and finding {result!r}")
+    logger.info(f"File {filename!r} is associated with packages {result!r}")
     return result
