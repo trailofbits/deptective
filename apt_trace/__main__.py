@@ -11,20 +11,35 @@ import subprocess
 from ptrace import PtraceError
 from ptrace.debugger import (PtraceDebugger, Application,
                              ProcessExit, ProcessSignal, NewProcessEvent, ProcessExecution)
-from ptrace.syscall import (SYSCALL_NAMES, SYSCALL_PROTOTYPES,
-                            FILENAME_ARGUMENTS, SOCKET_SYSCALL_NAMES)
+from ptrace.syscall import SYSCALL_PROTOTYPES, FILENAME_ARGUMENTS
 from ptrace.func_call import FunctionCallOptions
 from sys import stderr
 from optparse import OptionParser
-from logging import getLogger, error
+from logging import error
 from ptrace.error import PTRACE_ERRORS, writeError
 from ptrace.tools import signal_to_exitcode
+import cmd
+import sys
 import logging
 import os
 import functools
-from typing import Optional, Dict
+import shutil
+from typing import Optional, Dict, List, Set
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+
+is_root = os.getuid() == 0
+
+
+def run_as_root(command: List[str]) -> subprocess.CompletedProcess:
+    if not is_root:
+        if shutil.which("sudo") is None:
+            raise ValueError("this command must either be run as root or `sudo` must be installed and in the PATH")
+        sudo_prefix = ["sudo"]
+    else:
+        sudo_prefix = []
+    return subprocess.run(sudo_prefix + command, stderr=subprocess.DEVNULL)
+
+
 APP_DIRS = AppDirs("apt-trace", "Trail of Bits")
 CACHE_DIR = Path(APP_DIRS.user_cache_dir)
 if not CACHE_DIR.exists():
@@ -57,10 +72,11 @@ load_databases()
 #import atexit
 #atexit.register(dump_databases)
 
+
 @functools.cache
 def apt_install(package):
-    subprocess.run(["sudo", "apt", "-y", "install", package], stderr=subprocess.DEVNULL)
-    return True
+    return run_as_root(["apt", "-y", "install", package]).returncode == 0
+
 
 def apt_isinstalled(package):
     return 'installed' in subprocess.run(["apt", "-qq", "list", package], stderr=subprocess.DEVNULL, stdout=subprocess.PIPE).stdout.decode("utf8")
@@ -131,7 +147,7 @@ class SyscallTracer(Application):
         self.parseOptions()
         # Setup output (log)
         self.setupLog()
-        self.cache={}
+        self.cache = {}
 
     def setupLog(self):
         self._output = None
@@ -142,6 +158,14 @@ class SyscallTracer(Application):
             usage="%prog [options] -- program [arg1 arg2 ...]")
         self.createCommonOptions(parser)
         self.createLogOptions(parser)
+        parser.add_option("--auto", "-a",
+                          help="Do not prompt for whether to install dependencies; automatically try all options "
+                               "(this is the default if not run from a TTY)",
+                          action="store_true", default=not sys.stdin.isatty() or not sys.stdout.isatty())
+        parser.add_option("--auto-install-single", "-s",
+                          help="If there is a single APT package that satisfies a missing file, install it "
+                               "automatically, but if there are multiple possibilities then prompt the user",
+                          action="store_true")
         self.options, self.program = parser.parse_args()
 
         # Create "only" filter
@@ -181,7 +205,7 @@ class SyscallTracer(Application):
                     exitcode = event.exitcode
                 continue
             except ProcessSignal as event:
-                event.display()
+                event.display(log=logger.debug)
                 event.process.syscall(event.signum)
                 exitcode = signal_to_exitcode(event.signum)
                 continue
@@ -210,16 +234,27 @@ class SyscallTracer(Application):
                     except:
                         data = ""
                     filename = os.path.abspath(os.fsdecode(data))
-                    if not filename.startswith("/home") and \
-                        not filename.startswith("/usr/local") and \
-                        not filename.startswith("/tmp") and \
-                        filename.startswith("/") and \
-                        not os.path.exists(filename):
+                    if filename.startswith("/") and not (
+                            os.path.exists(filename) or
+                            filename.startswith("/home") or
+                            filename.startswith("/usr/local") or
+                            filename.startswith("/tmp")
+                    ):
                         packages = file_to_packages(filename)
                         #packages = () #cached_file_to_packages(filename, self.cache)
                         packages = [pkg for pkg in packages if pkg not in done_packages]
                         if packages:
-                            Shell(filename=filename, packages=packages).cmdloop()
+                            if self.options.auto:
+                                raise NotImplementedError("TODO: Implement automatic mode")
+                            elif self.options.auto_install_single and len(packages) == 1:
+                                # automatically install this package
+                                if not apt_install(packages[0].strip()):
+                                    logger.warning(f"Error auto-installing package {packages[0]}!")
+                                    Shell(filename=filename, packages=packages).cmdloop()
+                                else:
+                                    logger.info(f"Automatically installed dependency {packages[0]}")
+                            else:
+                                Shell(filename=filename, packages=packages).cmdloop()
 
         # Break at next syscall
         process.syscall()
@@ -283,7 +318,7 @@ class SyscallTracer(Application):
             error("Interrupted.")
             exitcode = 1
         except PTRACE_ERRORS as err:
-            writeError(getLogger(), err, "Debugger error")
+            writeError(logger, err, "Debugger error")
             exitcode = 1
         self.debugger.quit()
         return exitcode
@@ -291,9 +326,10 @@ class SyscallTracer(Application):
     def createChild(self, program):
         return Application.createChild(self, program)
 
-import cmd, sys
 
 done_packages = set()
+
+
 class Shell(cmd.Cmd):
     prompt = '(apt-trace) '
     file = None
@@ -350,5 +386,6 @@ class Shell(cmd.Cmd):
         if line == "EOF" or len(line) == 0:
             return True
         self.stdout.write('[-] Unknown command: %r\n' % (line,))
+
 
 main = SyscallTracer().main
