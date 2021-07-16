@@ -28,6 +28,7 @@ class SyscallTracer(Application):
         # Setup output (log)
         self.setupLog()
         self.cache = {}
+        self.file_accesses = set()
 
     def setupLog(self):
         self._output = None
@@ -114,6 +115,7 @@ class SyscallTracer(Application):
                     except:
                         data = ""
                     filename = os.path.abspath(os.fsdecode(data))
+                    self.file_accesses.add(filename)
                     if filename.startswith("/") and not (
                             os.path.exists(filename) or
                             filename.startswith("/home") or
@@ -121,8 +123,9 @@ class SyscallTracer(Application):
                             filename.startswith("/tmp")
                     ):
                         packages = file_to_packages(filename)
-                        #packages = () #cached_file_to_packages(filename, self.cache)
                         packages = [pkg for pkg in packages if pkg not in done_packages]
+                        packages = [pkg for pkg in packages if not apt_isinstalled(pkg)]
+
                         if packages:
                             if self.options.auto:
                                 raise NotImplementedError("TODO: Implement automatic mode")
@@ -179,7 +182,15 @@ class SyscallTracer(Application):
         return self.syscallTrace(process)
 
     def main(self):
-        os._exit(self._main())
+        exit_value = self._main()
+        if self.options.verbose:
+            dependencies = set()
+            for filename in self.file_accesses:
+                dependencies.update(file_to_packages(filename))
+            print ("Dependencies:")
+            for dependency in dependencies:
+                print (f"  ubuntu:{dependency}")
+        os._exit(exit_value)
 
     def _main(self):
         self.debugger = PtraceDebugger()
@@ -219,10 +230,13 @@ class Shell(cmd.Cmd):
             raise ValueError("Shell needs a filename")
         self.filename = filename
         self.packages = packages
-        self.intro = f'Found {len(self.packages)} packages for filename {self.filename}. What do I do?\n'\
+        self.intro = f'Found {len(self.packages)} packages providing {self.filename}. What do I do?\n'\
                      f'Type help or ? to list commands.\n'
+
         if len(self.packages) < 20:
-            self.do_list()
+            self.intro += "Packages:\n"
+            for i, package in enumerate(self.packages):
+                self.intro += f"  {i:3d}: {package}\n"
 
         super().__init__(*args, **kwargs)
 

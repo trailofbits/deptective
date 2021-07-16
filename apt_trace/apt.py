@@ -63,7 +63,7 @@ def run_as_root(command: List[str]) -> subprocess.CompletedProcess:
 updated = False  # Controls when to update the cache
 
 
-@functools.cache
+@functools.lru_cache
 def apt_install(package):
     return run_as_root(["apt", "-y", "install", package]).returncode == 0
 
