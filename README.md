@@ -2,6 +2,9 @@
 
 # APT-trace
 `apt-trace` let you install dependencies of an arbitrary binary on the fly. 
+Every file access is catched on the fly before it can even fail. In normal operation
+a list of all the known packages that could provide that file are presented for used consideration. 
+`apt-trace` builds its own database to match filenames with packages using the system provided apt sources; the more sources there are configured bigger the universe of packages.
 
 ## Quickstart 🚀
 ```commandline
@@ -9,19 +12,30 @@ $ python setup.py install
 ```
 
 ### Running it 🏃
-You simply point it to your executable:
+You simply point `apt-trace` it to your executable/binary/script:
 ```console
-$ apt-trace $yourexe
+$ apt-trace  cat /usr/bin/transmission-gtk
+Found 1 packages providing /usr/bin/transmission-gtk. What do I do?
+Type help or ? to list commands.
+Packages:
+    0: transmission-gtk
+(apt-trace) continue
+/usr/bin/cat: /usr/bin/transmission-gtk: No such file or directory
+Dependencies:
+  ubuntu:locales
+  ubuntu:transmission-gtk
+  ubuntu:libc6
 ```
 
 ### apt-trace depends on.. 🎭
-A python package: python-ptrace and a some ubuntu packages: sudo, apt-file
+Some python packages: python-ptrace, appdirs, lz4 
+Dome ubuntu packages: sudo
+
 ```commandline
 $ apt install python3
 $ apt install python3-setuptools
-$ apt install apt-file
 $ apt install sudo
-$ apt-file update
+$ apt update
 ```
 
 ## Development 👷
