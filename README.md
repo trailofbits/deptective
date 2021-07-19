@@ -1,9 +1,8 @@
 ![](https://gist.githubusercontent.com/feliam/f837ff5af70b4786eb39bda2b829eacd/raw/7f3a3af57e0040e574673742d41938661a8cb88e/jdi.svg?sanitize=1)
 
 # APT-trace
-`apt-trace` let you install dependencies of an arbitrary binary on the fly. 
-Every file access is catched on the fly before it can even fail. In normal operation
-a list of all the known packages that could provide that file are presented for used consideration. 
+`apt-trace` will install dependencies of an arbitrary program on the fly. 
+`apt-trace` catches every file access before it can even fail and prints a list packages that provide that file. 
 `apt-trace` builds its own database to match filenames with packages using the system provided apt sources; the more sources there are configured bigger the universe of packages.
 
 ## Quickstart 🚀
