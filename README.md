@@ -28,7 +28,7 @@ Dependencies:
 
 ### apt-trace depends on.. 🎭
 Some python packages: python-ptrace, appdirs, lz4 
-Dome ubuntu packages: sudo
+Some ubuntu packages: sudo
 
 ```commandline
 $ apt install python3
