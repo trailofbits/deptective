@@ -12,7 +12,7 @@ import cmd
 import sys
 import logging
 import os
-
+from typing import Set
 from .apt import apt_install, apt_isinstalled, file_to_packages
 
 
@@ -28,7 +28,7 @@ class SyscallTracer(Application):
         # Setup output (log)
         self.setupLog()
         self.cache = {}
-        self.file_accesses = set()
+        self.file_accesses = set(self.program[0])
 
     def setupLog(self):
         self._output = None
@@ -48,7 +48,9 @@ class SyscallTracer(Application):
                                "automatically, but if there are multiple possibilities then prompt the user",
                           action="store_true")
         self.options, self.program = parser.parse_args()
-
+        if not self.program:
+            parser.print_help()
+            quit()
         # Create "only" filter
         only = set()
         for syscall, format in SYSCALL_PROTOTYPES.items():
@@ -123,8 +125,7 @@ class SyscallTracer(Application):
                             filename.startswith("/tmp")
                     ):
                         packages = file_to_packages(filename)
-                        packages = [pkg for pkg in packages if pkg not in done_packages]
-                        packages = [pkg for pkg in packages if not apt_isinstalled(pkg)]
+                        packages = [pkg for pkg in packages if pkg not in done_packages and not apt_isinstalled(pkg)]
 
                         if packages:
                             if self.options.auto:
@@ -218,7 +219,7 @@ class SyscallTracer(Application):
         return Application.createChild(self, program)
 
 
-done_packages = set()
+done_packages:Set[str] = set()
 
 
 class Shell(cmd.Cmd):
