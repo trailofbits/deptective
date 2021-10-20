@@ -4,52 +4,20 @@ import logging
 import lz4.frame
 import os
 from pathlib import Path
-import pickle
+import atexit
 import shutil
 import subprocess
 from typing import Dict, List, Set, Union, Tuple
-
 from appdirs import AppDirs
 
 
 logger = logging.getLogger(__name__)
-
-
 APP_DIRS = AppDirs("apt-trace", "Trail of Bits")
 CACHE_DIR = Path(APP_DIRS.user_cache_dir)
 if not CACHE_DIR.exists():
     CACHE_DIR.mkdir(parents=True)
 
-contents_db: Dict[bytes, Set[str]] = {}
-_loaded_dbs: Set[Path] = set()
-
-CONTENTS_DB = CACHE_DIR / "contents.pkl"
-LOADED_DBS = CACHE_DIR / "loadeddb.pkl"
-
-
-def load_databases():
-    global contents_db, _loaded_dbs
-    if LOADED_DBS.exists():
-        logger.info("Loading cached APT sources")
-        with open(LOADED_DBS, 'rb') as loaded_dbs_fd:
-            _loaded_dbs = pickle.load(loaded_dbs_fd)
-    if CONTENTS_DB.exists():
-        logger.info("Loading cached file mapping")
-        with open(CONTENTS_DB, 'rb') as contents_db_fd:
-            contents_db = pickle.load(contents_db_fd)
-
-
-def dump_databases():
-    logger.info("Dumping new database version!")
-    with open(LOADED_DBS, 'wb') as loaded_dbs_fd:
-        pickle.dump(_loaded_dbs, loaded_dbs_fd)
-    with open(CONTENTS_DB, 'wb') as contents_db_fd:
-        pickle.dump(contents_db, contents_db_fd)
-
-
 is_root = os.getuid() == 0
-
-
 def run_as_root(command: List[str]) -> subprocess.CompletedProcess:
     if not is_root:
         if shutil.which("sudo") is None:
@@ -58,9 +26,6 @@ def run_as_root(command: List[str]) -> subprocess.CompletedProcess:
     else:
         sudo_prefix = []
     return subprocess.run(sudo_prefix + command, stderr=subprocess.DEVNULL)
-
-
-updated = False  # Controls when to update the cache
 
 
 @functools.lru_cache
@@ -73,6 +38,10 @@ def apt_isinstalled(package):
         ["apt", "-qq", "list", package], stderr=subprocess.DEVNULL, stdout=subprocess.PIPE
     ).stdout.decode("utf8")
 
+
+import sqlite3
+PACKAGES_DB = CACHE_DIR / "packages.sqlite"
+db_connection = None
 
 @functools.lru_cache(maxsize=128)
 def file_to_packages(filename: Union[str, bytes, Path], arch: str = "amd64") -> Tuple[str, ...]:
@@ -93,25 +62,52 @@ def file_to_packages(filename: Union[str, bytes, Path], arch: str = "amd64") -> 
     except UnicodeEncodeError:
         logger.warning(f"File {filename!r} cannot be encoded in UTF-8; skipping")
         return ()
-    global updated
-    dump = False
-    if not updated:
-        load_databases()
+
+    global db_connection
+    if db_connection is None:
+        # low level simple sqlite usage follows
+        db_connection = sqlite3.connect(PACKAGES_DB)
+        if db_connection is None:
+            logger.info(f"Failed to connect to sqlite file {PACKAGES_DB}")
+            return ()
+
+        #register to close the singleton connection at exit
+        atexit.register(lambda: db_connection.close()) # type: ignore
+
+        # walk the apt sources files just once every apt-trace run
+        # fixme remove and/or explain the CASTs
+        cur = db_connection.cursor()
+        cur.execute('''CREATE TABLE IF NOT EXISTS contents (filename TEXT, package TEXT)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS loaded (dbfile TEXT)''')
         for dbfile in glob.glob(f'/var/lib/apt/lists/*Contents-{arch}.lz4'):
-            if not dbfile in _loaded_dbs:
-                logger.info(f"Rebuilding contents db {dbfile}")
-                with lz4.frame.open(dbfile, mode='r') as contents:
-                    for line in contents.readlines():
-                        size = len(line.split()[-1])
-                        packages_i_lst = line[-size-1:]
-                        filename_i = b'/'+line[:-size-1].strip()
-                        packages_i = (pkg.split(b"/")[-1].decode("utf-8").strip() for pkg in packages_i_lst.split(b","))
-                        contents_db.setdefault(filename_i, set()).update(packages_i)
-                _loaded_dbs.add(dbfile)
-                dump = True
-        updated = True
-        if dump:
-            dump_databases()
-    result = tuple(contents_db.get(filename, set()))
+            cur = db_connection.cursor()
+            cur.execute("SELECT 1 FROM loaded WHERE dbfile=CAST(? as TEXT) limit 1", (dbfile,))
+            if cur.fetchone() is not None:
+                continue
+            logger.info(f"Rebuilding contents db {dbfile}")
+            # FIXME bytes/string/TEXT/BLOB/encoding mini nightmare
+            with lz4.frame.open(dbfile, mode='r') as contents:
+                for line in contents.readlines():
+                    size = len(line.split()[-1])
+                    packages_i_lst = line[-size-1:]
+                    filename_i = b'/'+line[:-size-1].strip()
+                    packages_i = (pkg.split(b"/")[-1].decode("utf-8").strip() for pkg in packages_i_lst.split(b","))
+                    for package_j in packages_i:
+                        db_connection.cursor().execute("INSERT INTO contents VALUES (CAST(? as TEXT), CAST(? AS TEXT))", (filename_i, package_j))
+            db_connection.cursor().execute("INSERT INTO loaded VALUES (CAST(? AS TEXT))", (dbfile,))
+
+        #loaded apt sources are counted only the first time
+        cur = db_connection.cursor()
+        cur.execute("SELECT count() FROM loaded")
+        if not cur.fetchone():
+            logger.info("You need the contents file here: /var/lib/apt/lists/*Contents*.lz4. Try installing apt-file and doing apt update.")
+
+        #single commit for all the updates
+        db_connection.commit()
+
+    cur = db_connection.cursor()
+    cur.execute("SELECT DISTINCT(package) FROM contents WHERE filename like '%' || CAST(? AS TEXT)", (filename,))
+
+    result = tuple(cur.fetchall())
     logger.info(f"File {filename!r} is associated with packages {result!r}")
     return result
