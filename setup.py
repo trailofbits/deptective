@@ -8,7 +8,7 @@ with open(README_PATH, "r") as readme:
     README = readme.read()
 
 setup(
-    name="apt-trace",
+    name="apt_trace",
     description="Auto satisfy dependencies in software",
     long_description=README,
     long_description_content_type="text/markdown",
@@ -18,7 +18,12 @@ setup(
     version="0.0.1",
     packages=find_packages(exclude=["test"]),
     python_requires=">=3.7",
-    install_requires=["python-ptrace", "appdirs", "lz4"
+    install_requires=[
+        "python-ptrace",
+        "appdirs",
+        "lz4",
+        "randomname",
+        "docker"
     ],
     extras_require={
         "dev": ["flake8", "twine", "mypy>=0.812"]
