@@ -70,3 +70,7 @@ class Shell(cmd.Cmd):
 
 def main():
     exit(SBOMGenerator().main())
+
+
+if __name__ == "__main__":
+    main()

@@ -27,15 +27,21 @@ long __get_reg(pid_t child, int off) {
     return val;
 }
 
-int wait_for_syscall(pid_t child) {
+typedef struct {
+    int success;
+    int retcode;
+} syscall_result;
+
+syscall_result wait_for_syscall(pid_t child) {
     int status;
     while (1) {
         ptrace(PTRACE_SYSCALL, child, 0, 0);
         waitpid(child, &status, 0);
-        if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80)
-            return 0;
-        if (WIFEXITED(status))
-            return 1;
+        if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
+            return (syscall_result){.success=0, .retcode=0};
+        } else if (WIFEXITED(status)) {
+            return (syscall_result){.success=1, .retcode=WEXITSTATUS(status)};
+        }
         // fprintf(stderr, "[stopped %d (%x)]\n", status, WSTOPSIG(status));
     }
 }
@@ -108,7 +114,8 @@ char* check_for_files(pid_t child, int syscall_req) {
         path_arg = 0;
         break;
     case 257:
-        // openat
+    case 262:
+        // openat and newfstatat
         path_arg = 1;
         break;
     case 332:
@@ -134,15 +141,13 @@ int do_trace(pid_t child, int syscall_req, FILE* output) {
     waitpid(child, &status, 0);
     assert(WIFSTOPPED(status));
     ptrace(PTRACE_SETOPTIONS, child, 0, PTRACE_O_TRACESYSGOOD);
-    while(1) {
+    for(;;) {
         char* path;
+        syscall_result result = wait_for_syscall(child);
 
-        if (wait_for_syscall(child) != 0) {
-            break;
-        }
-
-        if (wait_for_syscall(child) != 0) {
-            break;
+        if (result.success != 0) {
+            fclose(output);
+            return result.retcode;
         }
 
         retval = get_reg(child, eax);
@@ -161,8 +166,6 @@ int do_trace(pid_t child, int syscall_req, FILE* output) {
             free(path);
         }
     }
-    fclose(output);
-    return 0;
 }
 
 int do_child(int argc, char **argv) {

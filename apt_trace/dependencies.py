@@ -66,8 +66,11 @@ class SBOMGenerator:
     #     self._image_name = None
 
     def main(self) -> int:
-        with SBOMGeneratorStep(self, "cat Dockerfile") as step:
-            step.run()
+        with SBOMGeneratorStep(self, "./configure") as step:
+            if step.run():
+                print("GOOD")
+            else:
+                print("BAD")
 
         # return SBOMGeneratorStep().main()
 
@@ -88,10 +91,14 @@ class SBOMGeneratorStep:
         self.preinstall: Set[str] = set(preinstall)
         self.generator: SBOMGenerator = generator
         self.parent: Optional[SBOMGeneratorStep] = parent
+        self.retval: int = -1
         if parent is not None:
             self.level: int = parent.level + 1
+            self.tried_packages: Set[str] = set(parent.tried_packages)
         else:
             self.level = 0
+            self.tried_packages = set()
+        self.missing_files: Set[str] = set()
 
     @property
     def parent_image(self) -> Image:
@@ -110,25 +117,38 @@ class SBOMGeneratorStep:
             return self.parent_image
         return self._image
 
-    def run(self):
-        print("Running...")
-        retval = -1
+    def run(self) -> bool:
+        print(f"Running step {self.level}...")
         try:
             print(f"apt-strace /log/apt-trace.txt {self.command}")
-            retval, output = self._container.exec_run(
+            self.retval, output = self._container.exec_run(
                 f"apt-strace /log/apt-trace.txt {self.command}",
                 workdir="/workdir",
                 stdout=True,
                 stderr=True
             )
         finally:
-            print(f"Ran, exit code {retval}")
+            print(f"Ran, exit code {self.retval}")
             print(output)
-        print(self._logdir)
         with open(self._logdir / "apt-trace.txt") as log:
-            print(log.read())
-        return retval
-        # self.generator.client.containers.run(self.image, command="apt-strace ls", remove=True)
+            for line in log:
+                if line.startswith("missing\t"):
+                    self.missing_files.add(line[len("missing\t"):].strip())
+        print(self.missing_files)
+        if self.retval == 0:
+            return True
+        elif not self.missing_files:
+            return False
+        packages_to_try: Set[str] = set()
+        for file in self.missing_files:
+            packages_to_try |= set(file_to_packages(file)) - self.tried_packages
+        if not packages_to_try:
+            return False
+        for package in packages_to_try:
+            with SBOMGeneratorStep(self.generator, self.command, preinstall=(package,), parent=self) as substep:
+                if substep.run():
+                    return True
+        return False
 
     def __enter__(self) -> "SBOMGeneratorStep":
         assert self._logdir is None
