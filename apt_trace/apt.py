@@ -62,11 +62,11 @@ class AptCache:
 
     @property
     def contents_db(self) -> Dict[bytes, Set[str]]:
-        if self._contents_db is None or True:
+        if self._contents_db is None:
             key = (self.arch, self.ubuntu_version)
             if key in self.LOADED and self.LOADED[key]._contents_db is not None:
                 self._contents_db = self.LOADED[key]._contents_db
-            elif False and self._contents_db_cache.exists():
+            elif self._contents_db_cache.exists():
                 logger.info(f"Loading cached APT sources for Ubuntu {self.ubuntu_version} {self.arch}")
                 with open(self._contents_db_cache, 'rb') as f:
                     self._contents_db = pickle.load(f)
