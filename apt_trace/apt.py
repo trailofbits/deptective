@@ -87,5 +87,5 @@ def file_to_packages(
     logger.debug(f"searching for packages associated with {filename!r}")
     cache = AptCache.get(arch, ubuntu_version)
     result = tuple(cache[filename])
-    logger.info(f"File {filename!r} is associated with packages {result!r}")
+    logger.debug(f"File {filename!r} is associated with packages {result!r}")
     return result

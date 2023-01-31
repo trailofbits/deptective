@@ -97,8 +97,8 @@ class SBOMGenerator:
         # we need to build the image!
         return client.images.build(path=str(APT_STRACE_DIR), tag="trailofbits/apt-strace", rm=True, pull=True)[0]
 
-    def main(self) -> Iterator[SBOM]:
-        with SBOMGeneratorStep(self, "./configure") as step:
+    def main(self, command: str) -> Iterator[SBOM]:
+        with SBOMGeneratorStep(self, command) as step:
             yield from step.run()
 
 
@@ -145,9 +145,9 @@ class SBOMGeneratorStep:
         return self._image
 
     def run(self) -> Iterator[SBOM]:
-        print(f"Running step {self.level}...")
+        logger.debug(f"Running step {self.level}...")
         try:
-            print(f"apt-strace /log/apt-trace.txt {self.command}")
+            logger.debug(f"apt-strace /log/apt-trace.txt {self.command}")
             self.retval, output = self._container.exec_run(
                 f"apt-strace /log/apt-trace.txt {self.command}",
                 workdir="/workdir",
@@ -155,14 +155,14 @@ class SBOMGeneratorStep:
                 stderr=True
             )
         finally:
-            print(f"Ran, exit code {self.retval}")
+            logger.debug(f"Ran, exit code {self.retval}")
             # print(output)
             self._container.stop()
         with open(self._logdir / "apt-trace.txt") as log:
             for line in log:
                 if line.startswith("missing\t"):
                     self.missing_files.append(line[len("missing\t"):].strip())
-        # print(self.missing_files)
+        logger.debug(self.missing_files)
         if self.retval == 0:
             yield SBOM()
             return
@@ -221,32 +221,30 @@ class SBOMGeneratorStep:
                 if retval != 0:
                     raise ValueError(f"Error copying the source files to /workdir in the Docker image: {output}")
             if self.preinstall:
-                print(f"Installing {', '.join(self.preinstall)} ...")
+                logger.info(f"Installing {', '.join(self.preinstall)} ...")
                 retval, output = self._container.exec_run(f"apt-get -y install {' '.join(self.preinstall)}")
                 if retval != 0:
                     raise PreinstallError(f"Error apt-get installing {' '.join(self.preinstall)}: {output}")
-                print("Installed.")
         except:
             self.cleanup()
             raise
-        print(f"Committing as {self.generator.image_name}:{self.level}...")
+        logger.debug(f"Committing as {self.generator.image_name}:{self.level}...")
         self._image = self._container.commit()
         self._image.tag(repository=self.generator.image_name, tag=self.tag)
-        print(f"Committed.")
         return self
 
     def cleanup(self):
-        print("Removing the container...")
+        logger.debug("Removing the container...")
         try:
             self._container.remove(force=True)
-            print("Removed.")
+            logger.debug("Removed.")
         except NotFound:
             # the container was already stopped
-            print("Removed.")
+            logger.debug("Removed.")
         if self._image is not None:
-            print(f"Removing image {self.generator.image_name}:{self.level} ...")
+            logger.debug(f"Removing image {self.generator.image_name}:{self.level} ...")
             self._image.remove(force=True)
-            print("Removed.")
+            logger.debug("Removed.")
             self._image = None
         self._logdir = None
         self._log_tmpdir = None
