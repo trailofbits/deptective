@@ -1,14 +1,14 @@
 from logging import getLogger
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Iterable, Optional, Set
+from typing import Iterable, Iterator, Optional, Set, Tuple, Union
 
 import docker
 from docker.errors import NotFound
 from docker.models.images import Image
 import randomname
 
-from .apt import apt_install, apt_isinstalled, apt_uninstall, file_to_packages
+from .apt import apt_install, apt_uninstall, file_to_packages
 from .strace import SyscallTracer
 
 
@@ -16,6 +16,47 @@ logger = getLogger(__name__)
 
 
 APT_STRACE_DIR = Path(__file__).absolute().parent / "apt-strace"
+
+
+class SBOM:
+    def __init__(self, dependencies: Iterable[str] = ()):
+        self.dependencies: Tuple[str, ...] = tuple(dependencies)
+
+    def __len__(self):
+        return len(self.dependencies)
+
+    def __iter__(self):
+        return iter(self.dependencies)
+
+    def __getitem__(self, index: int) -> str:
+        return self.dependencies[index]
+
+    def __hash__(self):
+        return hash(self.dependencies)
+
+    def __add__(self, package_or_sbom: Union[str, "SBOM"]) -> "SBOM":
+        if isinstance(package_or_sbom, SBOM):
+            return SBOM(self.dependencies + package_or_sbom.dependencies)
+        return SBOM(self.dependencies + (package_or_sbom,))
+
+    def __str__(self):
+        return ", ".join(self.dependencies)
+
+
+class SBOMGenerationError(RuntimeError):
+    pass
+
+
+class NonZeroExit(SBOMGenerationError):
+    pass
+
+
+class PackageResolutionError(SBOMGenerationError):
+    pass
+
+
+class PreinstallError(SBOMGenerationError):
+    pass
 
 
 class SBOMGenerator:
@@ -56,24 +97,9 @@ class SBOMGenerator:
         # we need to build the image!
         return client.images.build(path=str(APT_STRACE_DIR), tag="trailofbits/apt-strace", rm=True, pull=True)[0]
 
-    # def __enter__(self) -> "SBOMGenerator":
-    #     while True:
-    #         image_name = f"trailofbits/apt-trace-{randomname.get_name()}"
-    #         if not self.client.images.list(name=image_name):
-    #             break
-    #     self._image_name = image_name
-    #
-    # def __exit__(self, exc_type, exc_val, exc_tb):
-    #     self._image_name = None
-
-    def main(self) -> int:
+    def main(self) -> Iterator[SBOM]:
         with SBOMGeneratorStep(self, "./configure") as step:
-            if step.run():
-                print("GOOD")
-            else:
-                print("BAD")
-
-        # return SBOMGeneratorStep().main()
+            yield from step.run()
 
 
 class SBOMGeneratorStep:
@@ -118,7 +144,7 @@ class SBOMGeneratorStep:
             return self.parent_image
         return self._image
 
-    def run(self) -> bool:
+    def run(self) -> Iterator[SBOM]:
         print(f"Running step {self.level}...")
         try:
             print(f"apt-strace /log/apt-trace.txt {self.command}")
@@ -138,19 +164,38 @@ class SBOMGeneratorStep:
                     self.missing_files.add(line[len("missing\t"):].strip())
         print(self.missing_files)
         if self.retval == 0:
-            return True
+            yield SBOM()
+            return
         elif not self.missing_files:
-            return False
+            raise NonZeroExit(f"`{self.command}` exited with code {self.retval} without accessing any files")
         packages_to_try: Set[str] = set()
         for file in self.missing_files:
-            packages_to_try |= set(file_to_packages(file)) - self.tried_packages
+            packages_to_try |= set(file_to_packages(file)) - self.tried_packages - self.preinstall
         if not packages_to_try:
-            return False
+            raise PackageResolutionError(f"`{self.command}` exited with code {self.retval} having looked for missing "
+                                         f"files {self.missing_files!r}, none of which are satisfied by Ubuntu "
+                                         f"packages")
+        yielded = False
+        last_error: Optional[SBOMGenerationError] = None
         for package in packages_to_try:
-            with SBOMGeneratorStep(self.generator, self.command, preinstall=(package,), parent=self) as substep:
-                if substep.run():
-                    return True
-        return False
+            try:
+                with SBOMGeneratorStep(self.generator, self.command, preinstall=(package,), parent=self) as substep:
+                    try:
+                        for sbom in substep.run():
+                            yield SBOM((package,)) + sbom
+                            yielded = True
+                    except SBOMGenerationError:
+                        last_error = last_error
+            except PreinstallError:
+                # package was unable to be installed, so skip it
+                continue
+        if not yielded:
+            if last_error is not None:
+                raise last_error
+            else:
+                raise PackageResolutionError(f"`{self.command}` exited with code {self.retval} having looked for "
+                                             f"missing files {self.missing_files!r}, none of which are satisfied by "
+                                             f"Ubuntu packages")
 
     def __enter__(self) -> "SBOMGeneratorStep":
         assert self._logdir is None
@@ -175,7 +220,7 @@ class SBOMGeneratorStep:
                 print(f"Installing {', '.join(self.preinstall)} ...")
                 retval, output = self._container.exec_run(f"apt-get -y install {' '.join(self.preinstall)}")
                 if retval != 0:
-                    raise ValueError(f"Error apt-get installing {' '.join(self.preinstall)}: {output}")
+                    raise PreinstallError(f"Error apt-get installing {' '.join(self.preinstall)}: {output}")
                 print("Installed.")
         except:
             self.cleanup()

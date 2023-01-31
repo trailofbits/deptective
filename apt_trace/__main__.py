@@ -69,7 +69,8 @@ class Shell(cmd.Cmd):
 
 
 def main():
-    exit(SBOMGenerator().main())
+    for sbom in SBOMGenerator().main():
+        print(sbom)
 
 
 if __name__ == "__main__":
