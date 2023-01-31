@@ -1,12 +1,13 @@
 from logging import getLogger
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Iterable, Iterator, Optional, Set, Tuple, Union
+from typing import Iterable, Iterator, List, Optional, Set, Tuple, Union
 
 import docker
 from docker.errors import NotFound
 from docker.models.images import Image
 import randomname
+from tqdm import tqdm
 
 from .apt import file_to_packages
 
@@ -124,7 +125,7 @@ class SBOMGeneratorStep:
         else:
             self.level = 0
             self.tried_packages = set()
-        self.missing_files: Set[str] = set()
+        self.missing_files: List[str] = []
 
     @property
     def parent_image(self) -> Image:
@@ -155,28 +156,32 @@ class SBOMGeneratorStep:
             )
         finally:
             print(f"Ran, exit code {self.retval}")
-            print(output)
+            # print(output)
             self._container.stop()
         with open(self._logdir / "apt-trace.txt") as log:
             for line in log:
                 if line.startswith("missing\t"):
-                    self.missing_files.add(line[len("missing\t"):].strip())
-        print(self.missing_files)
+                    self.missing_files.append(line[len("missing\t"):].strip())
+        # print(self.missing_files)
         if self.retval == 0:
             yield SBOM()
             return
         elif not self.missing_files:
             raise NonZeroExit(f"`{self.command}` exited with code {self.retval} without accessing any files")
-        packages_to_try: Set[str] = set()
-        for file in self.missing_files:
-            packages_to_try |= set(file_to_packages(file)) - self.tried_packages - self.preinstall
+        packages_to_try: List[str] = []
+        history: Set[str] = set()
+        for file in reversed(self.missing_files):
+            # reverse the missing files so we try the last missing files first
+            new_packages = set(file_to_packages(file)) - self.tried_packages - self.preinstall - history
+            packages_to_try.extend(new_packages)
+            history |= new_packages
         if not packages_to_try:
             raise PackageResolutionError(f"`{self.command}` exited with code {self.retval} having looked for missing "
                                          f"files {self.missing_files!r}, none of which are satisfied by Ubuntu "
                                          f"packages")
         yielded = False
         last_error: Optional[SBOMGenerationError] = None
-        for package in packages_to_try:
+        for package in tqdm(packages_to_try, desc=f"step {self.level}", unit="packages", leave=False):
             try:
                 with SBOMGeneratorStep(self.generator, self.command, preinstall=(package,), parent=self) as substep:
                     try:
