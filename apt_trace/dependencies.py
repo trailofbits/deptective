@@ -4,6 +4,7 @@ from tempfile import TemporaryDirectory
 from typing import Iterable, Optional, Set
 
 import docker
+from docker.errors import NotFound
 from docker.models.images import Image
 import randomname
 
@@ -130,6 +131,7 @@ class SBOMGeneratorStep:
         finally:
             print(f"Ran, exit code {self.retval}")
             print(output)
+            self._container.stop()
         with open(self._logdir / "apt-trace.txt") as log:
             for line in log:
                 if line.startswith("missing\t"):
@@ -185,16 +187,17 @@ class SBOMGeneratorStep:
         return self
 
     def cleanup(self):
-        print("Stopping...")
-        self._container.stop()
-        print("Stopped.")
-        print("Waiting...")
-        self._container.wait()
-        print("Done!")
+        print("Removing the container...")
+        try:
+            self._container.remove(force=True)
+            print("Removed.")
+        except NotFound:
+            # the container was already stopped
+            print("Removed.")
         if self._image is not None:
-            print(f"Removing {self.generator.image_name}:{self.level} ...")
-            self._image.remove()
-            print("Removed!")
+            print(f"Removing image {self.generator.image_name}:{self.level} ...")
+            self._image.remove(force=True)
+            print("Removed.")
             self._image = None
         self._logdir = None
         self._log_tmpdir = None
