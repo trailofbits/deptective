@@ -8,8 +8,7 @@ from docker.errors import NotFound
 from docker.models.images import Image
 import randomname
 
-from .apt import apt_install, apt_uninstall, file_to_packages
-from .strace import SyscallTracer
+from .apt import file_to_packages
 
 
 logger = getLogger(__name__)
@@ -251,68 +250,3 @@ class SBOMGeneratorStep:
         log_tmpdir = self._log_tmpdir
         self.cleanup()
         log_tmpdir.__exit__(exc_type, exc_val, exc_tb)
-
-
-class SBOMGeneratorStepOld(SyscallTracer):
-    def __init__(self, parent: Optional["SBOMGeneratorStep"] = None):
-        self.parent: Optional[SBOMGeneratorStep] = parent
-        self.new_packages: Set[str] = set()
-        if parent is not None:
-            self.new_packages = set(parent.new_packages)
-        super().__init__()
-
-    @property
-    def installed(self) -> Set[str]:
-        if self.parent is None:
-            return self.new_packages
-        else:
-            return self.new_packages - self.parent.new_packages
-
-    def backtrack(self):
-        # uninstall the packages we installed
-        for installed in self.installed:
-            if not apt_uninstall(installed):
-                logger.warning(f"Error auto-uninstalling package {installed}!")
-        raise KeyboardInterrupt()
-
-    def handle_missing_file(self, path: str):
-        packages = file_to_packages(path)
-        #packages = () #cached_file_to_packages(filename, self.cache)
-        packages = [pkg for pkg in packages if pkg not in self.new_packages]
-        if packages:
-            if self.options.auto:
-                if len(packages) == 1:
-                    if apt_install(packages[0].strip()):
-                        logger.info(f"Automatically installed dependency {packages[0]}")
-                        self.new_packages.add(packages[0].strip())
-                    else:
-                        logger.warning(f"Error auto-installing package {packages[0]}!")
-                        self.backtrack()
-                    return
-                else:
-                    for package in map(str.strip, packages):
-                        if apt_install(package):
-                            logger.info(f"Automatically installed dependency {packages[0]}")
-                            self.new_packages.add(package)
-                            if SBOMGeneratorStep(parent=self).main() == 0:
-                                return
-                            else:
-                                # this branch did not work
-                                if apt_uninstall(package):
-                                    self.new_packages.remove(package)
-                                else:
-                                    logger.warning(f"Error auto-uninstalling package {package}!")
-                        else:
-                            logger.info(f"Error installing dependency {package}")
-                    self.backtrack()
-                    return
-            raise NotImplementedError("TODO: Re-implement non-auto mode")
-            if self.options.auto_install_single and len(packages) == 1:
-                # automatically install this package
-                if not apt_install(packages[0].strip()):
-                    logger.warning(f"Error auto-installing package {packages[0]}!")
-                    Shell(filename=filename, packages=packages).cmdloop()
-                else:
-                    logger.info(f"Automatically installed dependency {packages[0]}")
-            else:
-                Shell(filename=filename, packages=packages).cmdloop()

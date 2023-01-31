@@ -1,15 +1,10 @@
 import functools
-import glob
 import gzip
 import logging
-import lz4.frame
-import os
 from pathlib import Path
 import pickle
 import re
-import shutil
-import subprocess
-from typing import Dict, List, Optional, Set, Union, Tuple
+from typing import Dict, Optional, Set, Union, Tuple
 import urllib.request
 
 from appdirs import AppDirs
@@ -22,12 +17,6 @@ APP_DIRS = AppDirs("apt-trace", "Trail of Bits")
 CACHE_DIR = Path(APP_DIRS.user_cache_dir)
 if not CACHE_DIR.exists():
     CACHE_DIR.mkdir(parents=True)
-
-contents_db: Dict[bytes, Set[str]] = {}
-_loaded_dbs: Set[Path] = set()
-
-CONTENTS_DB = CACHE_DIR / "contents.pkl"
-LOADED_DBS = CACHE_DIR / "loadeddb.pkl"
 
 
 class AptCache:
@@ -89,56 +78,6 @@ class AptCache:
             if key in self.LOADED and self.LOADED[key]._contents_db is None:
                 self.LOADED[key]._contents_db = self._contents_db
         return self._contents_db
-
-
-def load_databases():
-    global contents_db, _loaded_dbs
-    if LOADED_DBS.exists():
-        logger.info("Loading cached APT sources")
-        with open(LOADED_DBS, 'rb') as loaded_dbs_fd:
-            _loaded_dbs = pickle.load(loaded_dbs_fd)
-    if CONTENTS_DB.exists():
-        logger.info("Loading cached file mapping")
-        with open(CONTENTS_DB, 'rb') as contents_db_fd:
-            contents_db = pickle.load(contents_db_fd)
-
-
-def dump_databases():
-    logger.info("Dumping new database version!")
-    with open(LOADED_DBS, 'wb') as loaded_dbs_fd:
-        pickle.dump(_loaded_dbs, loaded_dbs_fd)
-    with open(CONTENTS_DB, 'wb') as contents_db_fd:
-        pickle.dump(contents_db, contents_db_fd)
-
-
-is_root = os.getuid() == 0
-
-
-def run_as_root(command: List[str]) -> subprocess.CompletedProcess:
-    if not is_root:
-        if shutil.which("sudo") is None:
-            raise ValueError("this command must either be run as root or `sudo` must be installed and in the PATH")
-        sudo_prefix = ["sudo"]
-    else:
-        sudo_prefix = []
-    return subprocess.run(sudo_prefix + command, stderr=subprocess.DEVNULL)
-
-
-updated = False  # Controls when to update the cache
-
-
-def apt_install(package):
-    return run_as_root(["apt", "-y", "install", package]).returncode == 0
-
-
-def apt_uninstall(package):
-    return run_as_root(["apt", "-y", "uninstall", package]).returncode == 0
-
-
-def apt_isinstalled(package):
-    return 'installed' in subprocess.run(
-        ["apt", "-qq", "list", package], stderr=subprocess.DEVNULL, stdout=subprocess.PIPE
-    ).stdout.decode("utf8")
 
 
 @functools.lru_cache(maxsize=128)

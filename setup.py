@@ -19,11 +19,10 @@ setup(
     packages=find_packages(exclude=["test"]),
     python_requires=">=3.7",
     install_requires=[
-        "python-ptrace",
         "appdirs",
-        "lz4",
+        "docker",
         "randomname",
-        "docker"
+        "tqdm",
     ],
     extras_require={
         "dev": ["flake8", "twine", "mypy>=0.812"]
