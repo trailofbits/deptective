@@ -1,13 +1,16 @@
 import functools
 import glob
+import gzip
 import logging
 import lz4.frame
 import os
 from pathlib import Path
 import pickle
+import re
 import shutil
 import subprocess
-from typing import Dict, List, Set, Union, Tuple
+from typing import Dict, List, Optional, Set, Union, Tuple
+import urllib.request
 
 from appdirs import AppDirs
 
@@ -25,6 +28,67 @@ _loaded_dbs: Set[Path] = set()
 
 CONTENTS_DB = CACHE_DIR / "contents.pkl"
 LOADED_DBS = CACHE_DIR / "loadeddb.pkl"
+
+
+class AptCache:
+    LOADED: Dict[Tuple[str, str], "AptCache"] = {}
+
+    def __init__(self, arch: str = "amd64", ubuntu_version: str = "kinetic"):
+        self.arch: str = arch
+        self.ubuntu_version: str = ubuntu_version
+        self._contents_db: Optional[Dict[bytes, Set[str]]] = None
+        self._contents_db_cache: Path = CACHE_DIR / f"{ubuntu_version}_{arch}_contents.pkl"
+
+    def __contains__(self, filename: Union[str, bytes, Path]):
+        return self[filename]
+
+    def __getitem__(self, filename: Union[str, bytes, Path]) -> Set[str]:
+        if isinstance(filename, Path):
+            filename = str(filename)
+        if isinstance(filename, str):
+            filename = filename.encode("utf-8")
+        if filename.startswith(b"/"):
+            filename = filename[1:]  # the contents paths do not start with a leading slash
+        if filename in self.contents_db:
+            return self.contents_db[filename]
+        else:
+            return set()
+
+    @classmethod
+    def get(cls, arch: str = "amd64", ubuntu_version: str = "kinetic") -> "AptCache":
+        if (arch, ubuntu_version) not in cls.LOADED:
+            cls.LOADED[(arch, ubuntu_version)] = AptCache(arch, ubuntu_version)
+        return cls.LOADED[(arch, ubuntu_version)]
+
+    @property
+    def contents_db(self) -> Dict[bytes, Set[str]]:
+        if self._contents_db is None or True:
+            key = (self.arch, self.ubuntu_version)
+            if key in self.LOADED and self.LOADED[key]._contents_db is not None:
+                self._contents_db = self.LOADED[key]._contents_db
+            elif False and self._contents_db_cache.exists():
+                logger.info(f"Loading cached APT sources for Ubuntu {self.ubuntu_version} {self.arch}")
+                with open(self._contents_db_cache, 'rb') as f:
+                    self._contents_db = pickle.load(f)
+            else:
+                self._contents_db = {}
+                contents_url = f"http://security.ubuntu.com/ubuntu/dists/" \
+                               f"{self.ubuntu_version}/Contents-{self.arch}.gz"
+                logger.info(f"Downloading {contents_url}\nThis is a one-time download and may take a few minutes.")
+                response = urllib.request.urlopen(contents_url)
+                contents_pattern = re.compile(r"(\S+)\s+(\S.*)")
+                for line in gzip.decompress(response.read()).decode("utf-8").splitlines():
+                    m = contents_pattern.match(line)
+                    if not m:
+                        raise ValueError(f"Unexpected line: {line!r}")
+                    filename = m.group(1).encode("utf-8")
+                    packages = (pkg.split("/")[-1].strip() for pkg in m.group(1).split(","))
+                    self._contents_db.setdefault(filename, set()).update(packages)
+                with open(self._contents_db_cache, 'wb') as contents_db_fd:
+                    pickle.dump(self._contents_db, contents_db_fd)
+            if key in self.LOADED and self.LOADED[key]._contents_db is None:
+                self.LOADED[key]._contents_db = self._contents_db
+        return self._contents_db
 
 
 def load_databases():
@@ -78,43 +142,11 @@ def apt_isinstalled(package):
 
 
 @functools.lru_cache(maxsize=128)
-def file_to_packages(filename: Union[str, bytes, Path], arch: str = "amd64") -> Tuple[str, ...]:
-    """
-    Downloads and uses apt-file database directly
-    # http://security.ubuntu.com/ubuntu/dists/focal-security/Contents-amd64.gz
-    # http://security.ubuntu.com/ubuntu/dists/focal-security/Contents-i386.gz
-    """
-    if arch not in ("amd64", "i386"):
-        raise ValueError("Only amd64 and i386 supported")
+def file_to_packages(
+        filename: Union[str, bytes, Path], arch: str = "amd64", ubuntu_version: str = "kinetic"
+) -> Tuple[str, ...]:
     logger.debug(f"searching for packages associated with {filename!r}")
-    # ensure that the filename is a byte string:
-    try:
-        if isinstance(filename, str):
-            filename = filename.encode("utf-8")
-        elif isinstance(filename, Path):
-            filename = str(filename).encode("utf-8")
-    except UnicodeEncodeError:
-        logger.warning(f"File {filename!r} cannot be encoded in UTF-8; skipping")
-        return ()
-    global updated
-    dump = False
-    if not updated:
-        load_databases()
-        for dbfile in glob.glob(f'/var/lib/apt/lists/*Contents-{arch}.lz4'):
-            if not dbfile in _loaded_dbs:
-                logger.info(f"Rebuilding contents db {dbfile}")
-                with lz4.frame.open(dbfile, mode='r') as contents:
-                    for line in contents.readlines():
-                        size = len(line.split()[-1])
-                        packages_i_lst = line[-size-1:]
-                        filename_i = b'/'+line[:-size-1].strip()
-                        packages_i = (pkg.split(b"/")[-1].decode("utf-8").strip() for pkg in packages_i_lst.split(b","))
-                        contents_db.setdefault(filename_i, set()).update(packages_i)
-                _loaded_dbs.add(dbfile)
-                dump = True
-        updated = True
-        if dump:
-            dump_databases()
-    result = tuple(contents_db.get(filename, set()))
+    cache = AptCache.get(arch, ubuntu_version)
+    result = tuple(cache[filename])
     logger.info(f"File {filename!r} is associated with packages {result!r}")
     return result
