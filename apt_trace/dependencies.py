@@ -2,7 +2,7 @@ from logging import getLogger
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
-from typing import Iterable, Iterator, List, Optional, Set, Tuple, Union
+from typing import FrozenSet, Iterable, Iterator, List, Optional, Set, Tuple, Union
 
 import docker
 from docker.errors import NotFound
@@ -23,6 +23,7 @@ APT_STRACE_DIR = Path(__file__).absolute().parent / "apt-strace"
 class SBOM:
     def __init__(self, dependencies: Iterable[str] = ()):
         self.dependencies: Tuple[str, ...] = tuple(dependencies)
+        self.dependency_set: FrozenSet[str] = frozenset(self.dependencies)
 
     def __len__(self):
         return len(self.dependencies)
@@ -34,12 +35,20 @@ class SBOM:
         return self.dependencies[index]
 
     def __hash__(self):
-        return hash(self.dependencies)
+        return hash(self.dependency_set)
+
+    def __eq__(self, other):
+        return isinstance(other, SBOM) and self.dependency_set == other.dependency_set
 
     def __add__(self, package_or_sbom: Union[str, "SBOM"]) -> "SBOM":
         if isinstance(package_or_sbom, SBOM):
             return SBOM(self.dependencies + package_or_sbom.dependencies)
         return SBOM(self.dependencies + (package_or_sbom,))
+
+    @property
+    def rich_str(self) -> str:
+        package_names = [f":floppy_disk: [bold italic]{p}[/bold italic]" for p in self]
+        return ", ".join(package_names)
 
     def __str__(self):
         return ", ".join(self.dependencies)
@@ -68,6 +77,7 @@ class SBOMGenerator:
         if console is None:
             console = Console(log_path=False, file=sys.stderr)
         self.console: Console = console
+        self.infeasible: Set[SBOM] = set()
 
     @property
     def image_name(self) -> str:
@@ -137,6 +147,15 @@ class SBOMGeneratorStep:
         self._task: Optional[TaskID] = None
 
     @property
+    def sbom(self) -> SBOM:
+        node: Optional[SBOMGeneratorStep] = self
+        s = SBOM()
+        while node is not None:
+            s = SBOM(node.preinstall) + s
+            node = node.parent
+        return s
+
+    @property
     def parent_image(self) -> Image:
         if self.parent is None:
             return self.generator.apt_strace_image
@@ -153,17 +172,16 @@ class SBOMGeneratorStep:
             return self.parent_image
         return self._image
 
+    def _register_infeasible(self):
+        sbom = self.sbom
+        logger.info(f"Infeasible dependency sequence: {sbom.rich_str}")
+        self.generator.infeasible.add(sbom)
+        raise PackageResolutionError(f"`{self.command}` exited with code {self.retval} having looked for "
+                                     f"missing files {self.missing_files!r}, none of which are satisfied by "
+                                     f"Ubuntu packages")
+
     def run(self) -> Iterator[SBOM]:
         logger.debug(f"Running step {self.level}...")
-        if not self.preinstall:
-            task_name = ":stopwatch: Baseline"
-        else:
-            task_name = f":floppy_disk: {', '.join(self.preinstall)}"
-        if self.level == 0:
-            # make sure that we pre-load the apt cache before starting our task, otherwise `rich` will mess
-            # up its progress bars
-            _ = AptCache.get().contents_db
-        self._task = self._progress.add_task(task_name, total=None)
         try:
             logger.debug(f"apt-strace /log/apt-trace.txt {self.command}")
             self.retval, output = self._container.exec_run(
@@ -176,6 +194,11 @@ class SBOMGeneratorStep:
             logger.debug(f"Ran, exit code {self.retval}")
             # print(output)
             self._container.stop()
+            logger.debug(":timer_clock: Waiting for the container to stop...")
+            try:
+                self._container.wait(condition="stopped")
+            except NotFound:
+                pass
         with open(self._logdir / "apt-trace.txt") as log:
             for line in log:
                 if line.startswith("missing\t"):
@@ -194,15 +217,18 @@ class SBOMGeneratorStep:
             packages_to_try.extend(new_packages)
             history |= new_packages
         if not packages_to_try:
-            raise PackageResolutionError(f"`{self.command}` exited with code {self.retval} having looked for missing "
-                                         f"files {self.missing_files!r}, none of which are satisfied by Ubuntu "
-                                         f"packages")
+            self._register_infeasible()  # this always raises an exception
         yielded = False
         last_error: Optional[SBOMGenerationError] = None
         self._progress.update(self._task, total=len(packages_to_try))
         for package in packages_to_try:
             try:
-                with SBOMGeneratorStep(self.generator, self.command, preinstall=(package,), parent=self) as substep:
+                step = SBOMGeneratorStep(self.generator, self.command, preinstall=(package,), parent=self)
+                if step.sbom in self.generator.infeasible:
+                    # we already know that this substep's SBOM is infeasible
+                    logger.debug(f"Skipping substep {package} because we already know that it is infeasible")
+                    continue
+                with step as substep:
                     try:
                         for sbom in substep.run():
                             yield SBOM((package,)) + sbom
@@ -215,18 +241,25 @@ class SBOMGeneratorStep:
                 continue
             finally:
                 self._progress.update(self._task, advance=1)
+        self._progress.update(self._task, visible=False)
         if not yielded:
             if last_error is not None:
                 raise last_error
             else:
-                raise PackageResolutionError(f"`{self.command}` exited with code {self.retval} having looked for "
-                                             f"missing files {self.missing_files!r}, none of which are satisfied by "
-                                             f"Ubuntu packages")
+                self._register_infeasible()  # this always raises an exception
 
     def __enter__(self) -> "SBOMGeneratorStep":
         assert self._logdir is None
         if self.parent is None:
+            # make sure that we pre-load the apt cache before starting our task, otherwise `rich` will mess
+            # up its progress bars
+            _ = AptCache.get().contents_db
             self._progress.__enter__()
+        if not self.preinstall:
+            task_name = f":magnifying_glass_tilted_right: {self.command}"
+        else:
+            task_name = f"[blue]{self.level}[/blue] :floppy_disk: [bold italic]{', '.join(self.preinstall)}"
+        self._task = self._progress.add_task(task_name, total=None)
         self._log_tmpdir = TemporaryDirectory()
         self._logdir = Path(self._log_tmpdir.__enter__()).absolute()
         cwd = Path.cwd().absolute()
@@ -246,10 +279,14 @@ class SBOMGeneratorStep:
                 if retval != 0:
                     raise ValueError(f"Error copying the source files to /workdir in the Docker image: {output}")
             if self.preinstall:
-                logger.info(f"Installing {', '.join(self.preinstall)} ...")
+                logger.debug(f"Installing {', '.join(self.preinstall)} ...")
                 retval, output = self._container.exec_run(f"apt-get -y install {' '.join(self.preinstall)}")
                 if retval != 0:
                     raise PreinstallError(f"Error apt-get installing {' '.join(self.preinstall)}: {output}")
+        except KeyboardInterrupt:
+            logger.info(":stop_sign: caught keyboard interrupt; cleaning up...")
+            self.cleanup()
+            raise
         except:
             self.cleanup()
             raise
@@ -261,8 +298,10 @@ class SBOMGeneratorStep:
     def cleanup(self):
         logger.debug(f"Removing the container for step {self.level}...")
         try:
-            self._container.remove(force=True)
-            logger.debug(f"Waiting for the container to be removed...")
+            # self._container.update()
+            # logger.critical(self._container.status)
+            # self._container.remove(force=True)
+            # logger.debug(f"Waiting for the container to be removed...")
             self._container.wait(condition="removed")
             logger.debug("Removed.")
         except NotFound:

@@ -47,9 +47,19 @@ def main(args: Optional[Sequence[str]] = None) -> int:
 
     traceback.install(show_locals=True)
 
+    if sys.stdout.isatty():
+        out_console: Optional[Console] = Console()
+    else:
+        out_console = None
+
     try:
         for sbom in SBOMGenerator(console=console).main(" ".join(args.command)):
-            print(sbom)
+            if out_console is None:
+                sys.stdout.write(str(sbom))
+                sys.stdout.write("\n")
+            else:
+                out_console.print(sbom.rich_str)
+            sys.stdout.flush()
             return 0
     except KeyboardInterrupt:
         return 1
