@@ -10,7 +10,7 @@ from rich.logging import RichHandler
 from .dependencies import SBOMGenerator
 
 
-def main(args: Optional[Sequence[str]] = None):
+def main(args: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("command", nargs=argparse.REMAINDER)
 
@@ -47,6 +47,9 @@ def main(args: Optional[Sequence[str]] = None):
 
     traceback.install(show_locals=True)
 
-    for sbom in SBOMGenerator(console=console).main(" ".join(args.command)):
-        print(sbom)
-        break
+    try:
+        for sbom in SBOMGenerator(console=console).main(" ".join(args.command)):
+            print(sbom)
+            return 0
+    except KeyboardInterrupt:
+        return 1

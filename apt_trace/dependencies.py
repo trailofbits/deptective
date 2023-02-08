@@ -9,9 +9,9 @@ from docker.errors import NotFound
 from docker.models.images import Image
 import randomname
 from rich.console import Console
-from rich.progress import track
+from rich.progress import Progress, MofNCompleteColumn, TaskID
 
-from .apt import file_to_packages
+from .apt import AptCache, file_to_packages
 
 
 logger = getLogger(__name__)
@@ -127,10 +127,14 @@ class SBOMGeneratorStep:
         if parent is not None:
             self.level: int = parent.level + 1
             self.tried_packages: Set[str] = set(parent.tried_packages)
+            self._progress: Progress = parent._progress
         else:
             self.level = 0
             self.tried_packages = set()
+            self._progress = Progress(*Progress.get_default_columns(), MofNCompleteColumn(), console=generator.console,
+                                      transient=True)
         self.missing_files: List[str] = []
+        self._task: Optional[TaskID] = None
 
     @property
     def parent_image(self) -> Image:
@@ -151,6 +155,15 @@ class SBOMGeneratorStep:
 
     def run(self) -> Iterator[SBOM]:
         logger.debug(f"Running step {self.level}...")
+        if not self.preinstall:
+            task_name = ":stopwatch: Baseline"
+        else:
+            task_name = f":floppy_disk: {', '.join(self.preinstall)}"
+        if self.level == 0:
+            # make sure that we pre-load the apt cache before starting our task, otherwise `rich` will mess
+            # up its progress bars
+            _ = AptCache.get().contents_db
+        self._task = self._progress.add_task(task_name, total=None)
         try:
             logger.debug(f"apt-strace /log/apt-trace.txt {self.command}")
             self.retval, output = self._container.exec_run(
@@ -186,8 +199,8 @@ class SBOMGeneratorStep:
                                          f"packages")
         yielded = False
         last_error: Optional[SBOMGenerationError] = None
-        for package in track(packages_to_try, description=f"step {self.level}", transient=True,
-                             console=self.generator.console):
+        self._progress.update(self._task, total=len(packages_to_try))
+        for package in packages_to_try:
             try:
                 with SBOMGeneratorStep(self.generator, self.command, preinstall=(package,), parent=self) as substep:
                     try:
@@ -198,7 +211,10 @@ class SBOMGeneratorStep:
                         last_error = last_error
             except PreinstallError:
                 # package was unable to be installed, so skip it
+                logger.debug(f"[red]:warning: Unable to preinstall package {package}")
                 continue
+            finally:
+                self._progress.update(self._task, advance=1)
         if not yielded:
             if last_error is not None:
                 raise last_error
@@ -209,6 +225,8 @@ class SBOMGeneratorStep:
 
     def __enter__(self) -> "SBOMGeneratorStep":
         assert self._logdir is None
+        if self.parent is None:
+            self._progress.__enter__()
         self._log_tmpdir = TemporaryDirectory()
         self._logdir = Path(self._log_tmpdir.__enter__()).absolute()
         cwd = Path.cwd().absolute()
@@ -241,13 +259,15 @@ class SBOMGeneratorStep:
         return self
 
     def cleanup(self):
-        logger.debug("Removing the container...")
+        logger.debug(f"Removing the container for step {self.level}...")
         try:
             self._container.remove(force=True)
+            logger.debug(f"Waiting for the container to be removed...")
+            self._container.wait(condition="removed")
             logger.debug("Removed.")
         except NotFound:
             # the container was already stopped
-            logger.debug("Removed.")
+            logger.debug("The container had already been removed.")
         if self._image is not None:
             logger.debug(f"Removing image {self.generator.image_name}:{self.level} ...")
             self._image.remove(force=True)
@@ -260,3 +280,5 @@ class SBOMGeneratorStep:
         log_tmpdir = self._log_tmpdir
         self.cleanup()
         log_tmpdir.__exit__(exc_type, exc_val, exc_tb)
+        if self.parent is None:
+            self._progress.__exit__(exc_type, exc_val, exc_tb)
