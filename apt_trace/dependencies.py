@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.progress import Progress, MofNCompleteColumn, TaskID
 
 from .apt import AptCache, file_to_packages
+from .signals import handle_signals, SignalHandler
 
 
 logger = getLogger(__name__)
@@ -294,6 +295,7 @@ class SBOMGeneratorStep:
         self._image.tag(repository=self.generator.image_name, tag=self.tag)
         return self
 
+    @handle_signals
     def cleanup(self):
         logger.debug(f"Removing the container for step {self.level}...")
         try:
