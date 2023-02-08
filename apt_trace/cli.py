@@ -12,6 +12,9 @@ from .dependencies import SBOMGenerator
 
 def main(args: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--num-results", "-n", type=int, default=1,
+                        help="the maximum number of satisfying sets of package dependencies to discover; use zero "
+                             "to enumerate all possible results (default=1)")
     parser.add_argument("command", nargs=argparse.REMAINDER)
 
     log_section = parser.add_argument_group(title="logging")
@@ -53,13 +56,16 @@ def main(args: Optional[Sequence[str]] = None) -> int:
         out_console = None
 
     try:
-        for sbom in SBOMGenerator(console=console).main(" ".join(args.command)):
-            if out_console is None:
+        for i, sbom in enumerate(SBOMGenerator(console=console).main(" ".join(args.command))):
+            if out_console is None or True:
                 sys.stdout.write(str(sbom))
                 sys.stdout.write("\n")
             else:
                 out_console.print(sbom.rich_str)
             sys.stdout.flush()
-            return 0
+            if 0 < args.num_results <= i:
+                break
     except KeyboardInterrupt:
         return 1
+
+    return 0

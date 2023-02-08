@@ -241,7 +241,6 @@ class SBOMGeneratorStep:
                 continue
             finally:
                 self._progress.update(self._task, advance=1)
-        self._progress.update(self._task, visible=False)
         if not yielded:
             if last_error is not None:
                 raise last_error
@@ -319,5 +318,6 @@ class SBOMGeneratorStep:
         log_tmpdir = self._log_tmpdir
         self.cleanup()
         log_tmpdir.__exit__(exc_type, exc_val, exc_tb)
+        self._progress.update(self._task, visible=False)
         if self.parent is None:
             self._progress.__exit__(exc_type, exc_val, exc_tb)
