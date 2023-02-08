@@ -3,28 +3,7 @@ import logging
 import sys
 from typing import Optional, Sequence
 
-import tqdm
-
 from .dependencies import SBOMGenerator
-
-
-logger = logging.getLogger(__name__)
-
-
-class TqdmLoggingHandler(logging.Handler):
-    def __init__(self, level=logging.NOTSET):
-        super().__init__(level)
-
-    def emit(self, record):
-        try:
-            msg = self.format(record)
-            tqdm.tqdm.write(msg)
-            self.flush()
-        except Exception:
-            self.handleError(record)
-
-
-logger.addHandler(TqdmLoggingHandler())
 
 
 def main(args: Optional[Sequence[str]] = None):

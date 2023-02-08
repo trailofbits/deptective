@@ -1,3 +1,9 @@
+import logging
+
+from .logger import Logger
+
+logging.setLoggerClass(Logger)
+
 from .cli import main
 
 

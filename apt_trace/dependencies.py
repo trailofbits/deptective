@@ -215,6 +215,7 @@ class SBOMGeneratorStep:
         )
         try:
             if self.level == 0:
+                logger.info("Copying source files to the container...")
                 retval, output = self._container.exec_run(
                     "cp -r /src /workdir"
                 )
