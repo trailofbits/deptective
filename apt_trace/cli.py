@@ -1,20 +1,23 @@
 import argparse
 import logging
 import sys
-from typing import Optional, Sequence
+from typing import List, Optional, Sequence
 
 from rich import traceback
 from rich.console import Console
 from rich.logging import RichHandler
 
-from .dependencies import SBOMGenerator
+from .dependencies import SBOM, SBOMGenerator
 
 
 def main(args: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--num-results", "-n", type=int, default=1,
-                        help="the maximum number of satisfying sets of package dependencies to discover; use zero "
-                             "to enumerate all possible results (default=1)")
+    results_group = parser.add_mutually_exclusive_group()
+    results_group.add_argument("--num-results", "-n", type=int, default=1,
+                               help="the maximum number of satisfying sets of package dependencies to discover; use "
+                                    "zero to enumerate all possible results (default=1)")
+    results_group.add_argument("--all", "-a", action="store_true", help="enumerate all possible results; "
+                                                                        "equivalent to `--num-results 0`")
     parser.add_argument("command", nargs=argparse.REMAINDER)
 
     log_section = parser.add_argument_group(title="logging")
@@ -50,22 +53,25 @@ def main(args: Optional[Sequence[str]] = None) -> int:
 
     traceback.install(show_locals=True)
 
-    if sys.stdout.isatty():
-        out_console: Optional[Console] = Console()
-    else:
-        out_console = None
+    results: List[SBOM] = []
 
     try:
         for i, sbom in enumerate(SBOMGenerator(console=console).main(" ".join(args.command))):
-            if out_console is None or True:
+            if not sys.stdout.isatty():
                 sys.stdout.write(str(sbom))
                 sys.stdout.write("\n")
+                sys.stdout.flush()
             else:
-                out_console.print(sbom.rich_str)
-            sys.stdout.flush()
-            if 0 < args.num_results <= i:
+                results.append(sbom)
+            console.print(f"[bold white]Satisfying Dependencies:[/bold white] {sbom.rich_str}")
+            if not args.all and 0 < args.num_results <= i:
                 break
     except KeyboardInterrupt:
         return 1
+
+    for sbom in results:
+        sys.stdout.write(str(sbom))
+        sys.stdout.write("\n")
+    sys.stdout.flush()
 
     return 0

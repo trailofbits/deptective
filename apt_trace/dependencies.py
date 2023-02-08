@@ -142,7 +142,7 @@ class SBOMGeneratorStep:
             self.level = 0
             self.tried_packages = set()
             self._progress = Progress(*Progress.get_default_columns(), MofNCompleteColumn(), console=generator.console,
-                                      transient=True)
+                                      transient=True, expand=True)
         self.missing_files: List[str] = []
         self._task: Optional[TaskID] = None
 
