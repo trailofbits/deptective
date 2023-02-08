@@ -22,7 +22,7 @@ setup(
         "appdirs",
         "docker",
         "randomname",
-        "tqdm",
+        "rich",
     ],
     extras_require={
         "dev": ["flake8", "twine", "mypy>=0.812"]

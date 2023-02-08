@@ -3,6 +3,10 @@ import logging
 import sys
 from typing import Optional, Sequence
 
+from rich import traceback
+from rich.console import Console
+from rich.logging import RichHandler
+
 from .dependencies import SBOMGenerator
 
 
@@ -32,8 +36,17 @@ def main(args: Optional[Sequence[str]] = None):
             sys.stderr.write(f"Invalid log level: {args.log_level}\n")
             exit(1)
 
-    logging.basicConfig(level=numeric_log_level)
+    console = Console(log_path=False, file=sys.stderr)
 
-    for sbom in SBOMGenerator().main(" ".join(args.command)):
+    logging.basicConfig(
+        level=numeric_log_level,
+        format="%(message)s",
+        datefmt="[%X]",
+        handlers=[RichHandler(console=console)],
+    )
+
+    traceback.install(show_locals=True)
+
+    for sbom in SBOMGenerator(console=console).main(" ".join(args.command)):
         print(sbom)
         break

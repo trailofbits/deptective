@@ -1,8 +1,5 @@
 import logging
-
-from .logger import Logger
-
-logging.setLoggerClass(Logger)
+import sys
 
 from .cli import main
 

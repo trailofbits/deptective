@@ -1,5 +1,6 @@
 from logging import getLogger
 from pathlib import Path
+import sys
 from tempfile import TemporaryDirectory
 from typing import Iterable, Iterator, List, Optional, Set, Tuple, Union
 
@@ -7,7 +8,8 @@ import docker
 from docker.errors import NotFound
 from docker.models.images import Image
 import randomname
-from tqdm import tqdm
+from rich.console import Console
+from rich.progress import track
 
 from .apt import file_to_packages
 
@@ -60,9 +62,12 @@ class PreinstallError(SBOMGenerationError):
 
 
 class SBOMGenerator:
-    def __init__(self):
+    def __init__(self, console: Optional[Console] = None):
         self._client: Optional[docker.DockerClient] = None
         self._image_name: Optional[str] = None
+        if console is None:
+            console = Console(log_path=False, file=sys.stderr)
+        self.console: Console = console
 
     @property
     def image_name(self) -> str:
@@ -181,7 +186,8 @@ class SBOMGeneratorStep:
                                          f"packages")
         yielded = False
         last_error: Optional[SBOMGenerationError] = None
-        for package in tqdm(packages_to_try, desc=f"step {self.level}", unit="packages", leave=False):
+        for package in track(packages_to_try, description=f"step {self.level}", transient=True,
+                             console=self.generator.console):
             try:
                 with SBOMGeneratorStep(self.generator, self.command, preinstall=(package,), parent=self) as substep:
                     try:
