@@ -11,6 +11,6 @@ class ContainerTests(TestCase):
             self.assertTrue(
                 any(
                     b"base64" in line
-                    for line in container.run(["-la", "/usr/bin"], entrypoint="/bin/ls")
+                    for line in container.run(["-la", "/usr/bin"], entrypoint="/bin/ls").logs().split(b"\n")
                 )
             )
