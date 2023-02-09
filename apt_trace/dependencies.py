@@ -1,8 +1,9 @@
+import time
 from logging import getLogger
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
-from typing import FrozenSet, Iterable, Iterator, List, Optional, Set, Tuple, Union
+from typing import Dict, FrozenSet, Iterable, Iterator, List, Optional, Set, Tuple, Union
 
 import docker
 from docker.errors import NotFound
@@ -12,7 +13,8 @@ from rich.console import Console
 from rich.progress import Progress, MofNCompleteColumn, TaskID
 
 from .apt import AptCache, file_to_packages
-from .signals import handle_signals, SignalHandler
+from .containers import Container, ContainerProgress, DockerContainer
+from .signals import handle_signals
 
 
 logger = getLogger(__name__)
@@ -115,10 +117,10 @@ class SBOMGenerator:
 
     def main(self, command: str) -> Iterator[SBOM]:
         with SBOMGeneratorStep(self, command) as step:
-            yield from step.run()
+            yield from step.find_feasible_sboms()
 
 
-class SBOMGeneratorStep:
+class SBOMGeneratorStep(Container):
     def __init__(
             self,
             generator: SBOMGenerator,
@@ -126,24 +128,25 @@ class SBOMGeneratorStep:
             preinstall: Iterable[str] = (),
             parent: Optional["SBOMGeneratorStep"] = None
     ):
-        self._image: Optional[Image] = None
-        self._container = None
+        if parent is None:
+            p: Union[Image, SBOMGeneratorStep] = generator.apt_strace_image
+        else:
+            p = parent
+        super().__init__(parent=p, client=generator.client)
         self._log_tmpdir: Optional[TemporaryDirectory] = None
         self._logdir: Optional[Path] = None
         self.command: str = command
         self.preinstall: Set[str] = set(preinstall)
         self.generator: SBOMGenerator = generator
-        self.parent: Optional[SBOMGeneratorStep] = parent
         self.retval: int = -1
         if parent is not None:
-            self.level: int = parent.level + 1
             self.tried_packages: Set[str] = set(parent.tried_packages)
-            self._progress: Progress = parent._progress
+            self._progress: ContainerProgress = parent._progress
         else:
             self.level = 0
             self.tried_packages = set()
-            self._progress = Progress(*Progress.get_default_columns(), MofNCompleteColumn(), console=generator.console,
-                                      transient=True, expand=True)
+            self._progress = ContainerProgress(*Progress.get_default_columns(), MofNCompleteColumn(),
+                                               console=generator.console, transient=True, expand=True)
         self.missing_files: List[str] = []
         self._task: Optional[TaskID] = None
 
@@ -151,27 +154,10 @@ class SBOMGeneratorStep:
     def sbom(self) -> SBOM:
         node: Optional[SBOMGeneratorStep] = self
         s = SBOM()
-        while node is not None:
+        while isinstance(node, SBOMGeneratorStep):
             s = SBOM(node.preinstall) + s
             node = node.parent
         return s
-
-    @property
-    def parent_image(self) -> Image:
-        if self.parent is None:
-            return self.generator.apt_strace_image
-        else:
-            return self.parent.image
-
-    @property
-    def tag(self) -> str:
-        return f"step{self.level}"
-
-    @property
-    def image(self) -> Image:
-        if self._image is None:
-            return self.parent_image
-        return self._image
 
     def _register_infeasible(self):
         sbom = self.sbom
@@ -181,25 +167,18 @@ class SBOMGeneratorStep:
                                      f"missing files {self.missing_files!r}, none of which are satisfied by "
                                      f"Ubuntu packages")
 
-    def run(self) -> Iterator[SBOM]:
+    def find_feasible_sboms(self) -> Iterator[SBOM]:
         logger.debug(f"Running step {self.level}...")
         try:
             logger.debug(f"apt-strace /log/apt-trace.txt {self.command}")
-            self.retval, output = self._container.exec_run(
-                f"apt-strace /log/apt-trace.txt {self.command}",
-                workdir="/workdir",
-                stdout=True,
-                stderr=True
-            )
+            exe = self.run(["/log/apt-trace.txt", self.command], entrypoint="/usr/bin/apt-strace", workdir="/workdir")
+            self._progress.execute(exe)
+            while not exe.done:
+                self._progress.refresh()
+                time.sleep(0.5)
+            self.retval = exe.exit_code
         finally:
             logger.debug(f"Ran, exit code {self.retval}")
-            # print(output)
-            self._container.stop()
-            logger.debug(":timer_clock: Waiting for the container to stop...")
-            try:
-                self._container.wait(condition="stopped")
-            except NotFound:
-                pass
         with open(self._logdir / "apt-trace.txt") as log:
             for line in log:
                 if line.startswith("missing\t"):
@@ -231,7 +210,7 @@ class SBOMGeneratorStep:
                     continue
                 with step as substep:
                     try:
-                        for sbom in substep.run():
+                        for sbom in substep.find_feasible_sboms():
                             yield SBOM((package,)) + sbom
                             yielded = True
                     except SBOMGenerationError:
@@ -248,9 +227,31 @@ class SBOMGeneratorStep:
             else:
                 self._register_infeasible()  # this always raises an exception
 
-    def __enter__(self) -> "SBOMGeneratorStep":
+    @property
+    def volumes(self) -> Dict[str, Dict[str, str]]:
+        cwd = Path.cwd().absolute()
+        return {
+            str(cwd): {"bind": "/src", "mode": "ro"},
+            str(self._logdir): {"bind": "/log", "mode": "rw"}
+        }
+
+    def setup_image(self, container: DockerContainer):
+        if self.level == 0:
+            logger.info("Copying source files to the container...")
+            retval, output = container.exec_run(
+                "cp -r /src /workdir"
+            )
+            if retval != 0:
+                raise ValueError(f"Error copying the source files to /workdir in the Docker image: {output}")
+        if self.preinstall:
+            logger.debug(f"Installing {', '.join(self.preinstall)} ...")
+            retval, output = container.exec_run(f"apt-get -y install {' '.join(self.preinstall)}")
+            if retval != 0:
+                raise PreinstallError(f"Error apt-get installing {' '.join(self.preinstall)}: {output}")
+
+    def start(self):
         assert self._logdir is None
-        if self.parent is None:
+        if self.level == 0:
             # make sure that we pre-load the apt cache before starting our task, otherwise `rich` will mess
             # up its progress bars
             _ = AptCache.get().contents_db
@@ -262,64 +263,14 @@ class SBOMGeneratorStep:
         self._task = self._progress.add_task(task_name, total=None)
         self._log_tmpdir = TemporaryDirectory()
         self._logdir = Path(self._log_tmpdir.__enter__()).absolute()
-        cwd = Path.cwd().absolute()
-        self._container = self.generator.client.containers.run(
-            image=self.parent_image, entrypoint="/bin/bash", detach=True, remove=True, tty=True, read_only=False,
-            volumes={
-                str(cwd): {"bind": "/src", "mode": "ro"},
-                str(self._logdir): {"bind": "/log", "mode": "rw"}
-            }
-        )
-        try:
-            if self.level == 0:
-                logger.info("Copying source files to the container...")
-                retval, output = self._container.exec_run(
-                    "cp -r /src /workdir"
-                )
-                if retval != 0:
-                    raise ValueError(f"Error copying the source files to /workdir in the Docker image: {output}")
-            if self.preinstall:
-                logger.debug(f"Installing {', '.join(self.preinstall)} ...")
-                retval, output = self._container.exec_run(f"apt-get -y install {' '.join(self.preinstall)}")
-                if retval != 0:
-                    raise PreinstallError(f"Error apt-get installing {' '.join(self.preinstall)}: {output}")
-        except KeyboardInterrupt:
-            logger.info(":stop_sign: caught keyboard interrupt; cleaning up...")
-            self.cleanup()
-            raise
-        except:
-            self.cleanup()
-            raise
-        logger.debug(f"Committing as {self.generator.image_name}:{self.level}...")
-        self._image = self._container.commit()
-        self._image.tag(repository=self.generator.image_name, tag=self.tag)
-        return self
+        super().start()
 
-    @handle_signals
-    def cleanup(self):
-        logger.debug(f"Removing the container for step {self.level}...")
-        try:
-            # self._container.update()
-            # logger.critical(self._container.status)
-            # self._container.remove(force=True)
-            # logger.debug(f"Waiting for the container to be removed...")
-            self._container.wait(condition="removed")
-            logger.debug("Removed.")
-        except NotFound:
-            # the container was already stopped
-            logger.debug("The container had already been removed.")
-        if self._image is not None:
-            logger.debug(f"Removing image {self.generator.image_name}:{self.level} ...")
-            self._image.remove(force=True)
-            logger.debug("Removed.")
-            self._image = None
+    def stop(self):
+        super().stop()
+        log_tmpdir = self._log_tmpdir
         self._logdir = None
         self._log_tmpdir = None
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        log_tmpdir = self._log_tmpdir
-        self.cleanup()
-        log_tmpdir.__exit__(exc_type, exc_val, exc_tb)
+        log_tmpdir.__exit__(None, None, None)
         self._progress.update(self._task, visible=False)
-        if self.parent is None:
-            self._progress.__exit__(exc_type, exc_val, exc_tb)
+        if self.level == 0:
+            self._progress.__exit__(None, None, None)

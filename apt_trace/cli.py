@@ -7,8 +7,10 @@ from rich import traceback
 from rich.console import Console
 from rich.logging import RichHandler
 
-from .dependencies import SBOM, SBOMGenerator
+from .dependencies import SBOMGenerationError, SBOM, SBOMGenerator
 
+
+logger = logging.getLogger(__name__)
 
 def main(args: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser()
@@ -66,6 +68,9 @@ def main(args: Optional[Sequence[str]] = None) -> int:
             console.print(f"[bold white]Satisfying Dependencies:[/bold white] {sbom.rich_str}")
             if not args.all and 0 < args.num_results <= i:
                 break
+    except SBOMGenerationError as e:
+        logger.error(str(e))
+        return 1
     except KeyboardInterrupt:
         return 1
 

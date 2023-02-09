@@ -1,5 +1,5 @@
 import logging
-from typing import IO, Dict, List, Optional, Union
+from typing import IO, Dict, List, Optional, TypeVar, Union
 
 import docker
 from docker.client import DockerClient
@@ -14,6 +14,9 @@ from rich.progress import Progress
 
 
 logger = logging.getLogger(__name__)
+
+
+C = TypeVar("C")
 
 
 class Execution:
@@ -70,8 +73,8 @@ class Execution:
 
 class Container:
     def __init__(
-            self,
-            parent: Optional[Union["Container", Image, str]],
+            self: C,
+            parent: Optional[Union[C, Image, str]],
             client: Optional[DockerClient] = None,
             image_name: Optional[str] = None
     ):
@@ -91,7 +94,7 @@ class Container:
                     base_name = parent
                 image_name = f"{base_name}-{randomname.get_name()}"
             parent = self.client.images.get(parent)
-        self.parent: Union[Container, Image] = parent
+        self.parent: Union[C, Image] = parent
         if isinstance(parent, Container):
             self.level: int = parent.level + 1
             if image_name is None:
@@ -158,30 +161,11 @@ class Container:
             image=self.parent_image, entrypoint="/bin/bash", detach=True, remove=True, tty=True, read_only=False,
             volumes=self.volumes
         )
-        try:
-            self.setup_image(container)
+        self.setup_image(container)
 
-            logger.debug(f"Committing as {self.image_name}:{self.level}...")
-            self._image = container.commit()
-            self._image.tag(repository=self.image_name, tag=self.tag)
-
-        except KeyboardInterrupt:
-            logger.info(":stop_sign: caught keyboard interrupt; cleaning up...")
-            self.stop()
-            raise
-        except:
-            self.stop()
-            raise
-        finally:
-            logger.debug(f"Removing the container for step {self.level}...")
-            try:
-                container.remove(force=True)
-                logger.debug(f"Waiting for the container to be removed...")
-                container.wait(condition="removed")
-                logger.debug("Removed.")
-            except NotFound:
-                # the container was already stopped
-                logger.debug("The container had already been removed.")
+        logger.debug(f"Committing as {self.image_name}:{self.level}...")
+        self._image = container.commit()
+        self._image.tag(repository=self.image_name, tag=self.tag)
 
     def stop(self):
         if self._image is None:
@@ -193,7 +177,7 @@ class Container:
         if isinstance(self.parent, Container):
             self.parent.__exit__(None, None, None)
 
-    def __enter__(self) -> "Container":
+    def __enter__(self: C) -> C:
         self._entries += 1
         if self._entries == 1:
             self.start()
@@ -219,7 +203,7 @@ class ContainerProgress(Progress):
     def get_renderables(self):
         yield self.make_tasks_table(self.tasks)
         if self._execution is not None:
-            if not self._execution.done:
+            if self._execution.done:
                 self._execution = None
             else:
                 lines: List[str] = []
