@@ -1,5 +1,5 @@
 import logging
-from typing import IO, Dict, Iterator, Iterable, List, Optional, Union
+from typing import IO, Dict, List, Optional, Union
 
 import docker
 from docker.client import DockerClient
@@ -9,9 +9,8 @@ from docker.models.images import Image
 
 import randomname
 
-from rich.console import Console
 from rich.panel import Panel
-from rich.progress import GetTimeCallable, Progress, ProgressColumn
+from rich.progress import Progress
 
 
 logger = logging.getLogger(__name__)
