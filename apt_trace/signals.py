@@ -25,7 +25,7 @@ class SignalHandler:
 
     def handler(self, sig, frame):
         self.signals_received.append((sig, frame))
-        logger.warning(f"Caught [red]{signal.Signals(sig).name}[/red]; handling...")
+        logger.warning(f"Caught {signal.Signals(sig).name}; handling...")
 
     def __exit__(self, type, value, traceback):
         for sig, old_handler in zip(self.handling_signals, self._old_handlers):
