@@ -1,7 +1,5 @@
 from unittest import TestCase
 
-import docker
-
 from apt_trace.containers import Container
 
 

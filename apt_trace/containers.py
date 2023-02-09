@@ -1,5 +1,7 @@
 import logging
-from typing import IO, Dict, List, Optional, TypeVar, Union
+from threading import Thread
+import time
+from typing import Dict, List, Optional, TypeVar, Union
 
 import docker
 from docker.client import DockerClient
@@ -29,18 +31,16 @@ class Execution:
         if logging_driver != "json-file" and logging_driver != "journald":
             raise NotImplementedError("The logging driver for this container is not supported!")
 
-        self._stream: IO = docker_container.logs(
-            stdout=True, stderr=True, stream=False
-        )
         self.exit_code: Optional[int] = None
+
+        self._checkup_thread = Thread(target=self._checkup)
+        self._checkup_thread.start()
 
     @property
     def done(self) -> bool:
         return self.exit_code is not None or self.docker_container is None
 
     def _checkup(self):
-        if self.docker_container.status == "running" or self.exit_code is not None:
-            return
         try:
             self.exit_code = self.docker_container.wait()["StatusCode"]
         finally:
@@ -60,15 +60,12 @@ class Execution:
 
     def logs(self, scrollback: int = -1) -> bytes:
         if self.docker_container is None:
-            return ""
-        try:
-            if scrollback < 0:
-                tail = "all"
-            else:
-                tail = scrollback
-            return self.docker_container.logs(stdout=True, stderr=True, tail=tail)
-        finally:
-            self._checkup()
+            return b""
+        if scrollback < 0:
+            tail = "all"
+        else:
+            tail = scrollback
+        return self.docker_container.logs(stdout=True, stderr=True, tail=tail)
 
 
 class Container:
@@ -161,11 +158,19 @@ class Container:
             image=self.parent_image, entrypoint="/bin/bash", detach=True, remove=True, tty=True, read_only=False,
             volumes=self.volumes
         )
-        self.setup_image(container)
+        try:
+            self.setup_image(container)
 
-        logger.debug(f"Committing as {self.image_name}:{self.level}...")
-        self._image = container.commit()
-        self._image.tag(repository=self.image_name, tag=self.tag)
+            logger.debug(f"Committing as {self.image_name}:{self.level}...")
+            self._image = container.commit()
+            self._image.tag(repository=self.image_name, tag=self.tag)
+        finally:
+            try:
+                container.remove(force=True)
+                logger.debug(f"Waiting for container {container.id} to be removed...")
+                container.wait(condition="removed")
+            except NotFound:
+                pass
 
     def stop(self):
         if self._image is None:
@@ -193,12 +198,14 @@ class Container:
 class ContainerProgress(Progress):
     _execution: Optional[Execution] = None
     _scrollback: int = 10
+    _exec_title: str = ""
 
-    def execute(self, execution: Execution, scrollback: int = 10):
+    def execute(self, execution: Execution, title: str, scrollback: int = 10):
         if self._execution is not None and not self._execution.done:
             raise ValueError("An execution is already assigned to this progress!")
         self._execution = execution
         self._scrollback = scrollback
+        self._exec_title = title
 
     def get_renderables(self):
         yield self.make_tasks_table(self.tasks)
@@ -212,4 +219,6 @@ class ContainerProgress(Progress):
                         lines.append(line.decode("utf-8"))
                     except UnicodeDecodeError:
                         lines.append(repr(line)[2:-1])
-                yield Panel("\n".join(lines))
+                while lines and not lines[-1].strip():
+                    lines.pop()
+                yield Panel("\n".join(lines), title=self._exec_title)

@@ -28,6 +28,9 @@ class SBOM:
         self.dependencies: Tuple[str, ...] = tuple(dependencies)
         self.dependency_set: FrozenSet[str] = frozenset(self.dependencies)
 
+    def __bool__(self):
+        return bool(self.dependencies)
+
     def __len__(self):
         return len(self.dependencies)
 
@@ -161,8 +164,9 @@ class SBOMGeneratorStep(Container):
 
     def _register_infeasible(self):
         sbom = self.sbom
-        logger.info(f"Infeasible dependency sequence: {sbom.rich_str}")
-        self.generator.infeasible.add(sbom)
+        if sbom:
+            logger.info(f"Infeasible dependency sequence: {sbom.rich_str}", extra={"markup": True})
+            self.generator.infeasible.add(sbom)
         raise PackageResolutionError(f"`{self.command}` exited with code {self.retval} having looked for "
                                      f"missing files {self.missing_files!r}, none of which are satisfied by "
                                      f"Ubuntu packages")
@@ -172,7 +176,7 @@ class SBOMGeneratorStep(Container):
         try:
             logger.debug(f"apt-strace /log/apt-trace.txt {self.command}")
             exe = self.run(["/log/apt-trace.txt", self.command], entrypoint="/usr/bin/apt-strace", workdir="/workdir")
-            self._progress.execute(exe)
+            self._progress.execute(exe, title=self.command, scrollback=3)
             while not exe.done:
                 self._progress.refresh()
                 time.sleep(0.5)
@@ -217,7 +221,7 @@ class SBOMGeneratorStep(Container):
                         last_error = last_error
             except PreinstallError:
                 # package was unable to be installed, so skip it
-                logger.debug(f"[red]:warning: Unable to preinstall package {package}")
+                logger.warning(f"[red]:warning: Unable to preinstall package {package}", extra={"markup": True})
                 continue
             finally:
                 self._progress.update(self._task, advance=1)
@@ -243,8 +247,14 @@ class SBOMGeneratorStep(Container):
             )
             if retval != 0:
                 raise ValueError(f"Error copying the source files to /workdir in the Docker image: {output}")
+            logger.info("Updating APT sources...")
+            retval, output = container.exec_run(
+                "apt-get update -y"
+            )
+            if retval != 0:
+                raise ValueError(f"Error running `apt-get update`: {output}")
         if self.preinstall:
-            logger.debug(f"Installing {', '.join(self.preinstall)} ...")
+            logger.info(f"Installing {', '.join(self.preinstall)} into {container.short_id}...")
             retval, output = container.exec_run(f"apt-get -y install {' '.join(self.preinstall)}")
             if retval != 0:
                 raise PreinstallError(f"Error apt-get installing {' '.join(self.preinstall)}: {output}")
@@ -271,6 +281,6 @@ class SBOMGeneratorStep(Container):
         self._logdir = None
         self._log_tmpdir = None
         log_tmpdir.__exit__(None, None, None)
-        self._progress.update(self._task, visible=False)
+        self._progress.remove_task(self._task)
         if self.level == 0:
             self._progress.__exit__(None, None, None)

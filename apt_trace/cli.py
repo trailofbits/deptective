@@ -12,6 +12,7 @@ from .dependencies import SBOMGenerationError, SBOM, SBOMGenerator
 
 logger = logging.getLogger(__name__)
 
+
 def main(args: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser()
     results_group = parser.add_mutually_exclusive_group()
@@ -65,7 +66,7 @@ def main(args: Optional[Sequence[str]] = None) -> int:
                 sys.stdout.flush()
             else:
                 results.append(sbom)
-            console.print(f"[bold white]Satisfying Dependencies:[/bold white] {sbom.rich_str}")
+            logger.info(f"[bold white]Satisfying Dependencies:[/bold white] {sbom.rich_str}", extra={"markup": True})
             if not args.all and 0 < args.num_results <= i:
                 break
     except SBOMGenerationError as e:
