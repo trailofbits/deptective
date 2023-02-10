@@ -67,7 +67,7 @@ def main(args: Optional[Sequence[str]] = None) -> int:
             else:
                 results.append(sbom)
             logger.info(f"[bold white]Satisfying Dependencies:[/bold white] {sbom.rich_str}", extra={"markup": True})
-            if not args.all and 0 < args.num_results <= i:
+            if not args.all and 0 < args.num_results and i == args.num_results - 1:
                 break
     except SBOMGenerationError as e:
         logger.error(str(e))

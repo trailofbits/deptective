@@ -28,6 +28,9 @@ class SBOM:
         self.dependencies: Tuple[str, ...] = tuple(dependencies)
         self.dependency_set: FrozenSet[str] = frozenset(self.dependencies)
 
+    def issuperset(self, sbom: "SBOM") -> bool:
+        return self.dependency_set.issuperset(sbom.dependency_set)
+
     def __bool__(self):
         return bool(self.dependencies)
 
@@ -84,6 +87,7 @@ class SBOMGenerator:
             console = Console(log_path=False, file=sys.stderr)
         self.console: Console = console
         self.infeasible: Set[SBOM] = set()
+        self.feasible: Set[SBOM] = set()
 
     @property
     def image_name(self) -> str:
@@ -120,7 +124,9 @@ class SBOMGenerator:
 
     def main(self, command: str) -> Iterator[SBOM]:
         with SBOMGeneratorStep(self, command) as step:
-            yield from step.find_feasible_sboms()
+            for sbom in step.find_feasible_sboms():
+                self.feasible.add(sbom)
+                yield sbom
 
 
 class SBOMGeneratorStep(Container):
@@ -176,7 +182,7 @@ class SBOMGeneratorStep(Container):
         try:
             logger.debug(f"apt-strace /log/apt-trace.txt {self.command}")
             exe = self.run(["/log/apt-trace.txt", self.command], entrypoint="/usr/bin/apt-strace", workdir="/workdir")
-            self._progress.execute(exe, title=self.command, scrollback=3)
+            self._progress.execute(exe, title=self.command, scrollback=5)
             while not exe.done:
                 self._progress.refresh()
                 time.sleep(0.5)
@@ -211,6 +217,11 @@ class SBOMGeneratorStep(Container):
                 if step.sbom in self.generator.infeasible:
                     # we already know that this substep's SBOM is infeasible
                     logger.debug(f"Skipping substep {package} because we already know that it is infeasible")
+                    continue
+                elif any(step.sbom.issuperset(f) for f in self.generator.feasible):
+                    # this next step would produce a superset of an already known-good result, so skip it
+                    logger.debug(f"Skipping substep {package} because it is a superset of an already discovered "
+                                 f"feasible solution")
                     continue
                 with step as substep:
                     try:
