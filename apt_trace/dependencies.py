@@ -6,7 +6,6 @@ from tempfile import TemporaryDirectory
 from typing import Dict, FrozenSet, Iterable, Iterator, List, Optional, Set, Tuple, Union
 
 import docker
-from docker.errors import NotFound
 from docker.models.images import Image
 import randomname
 from rich.console import Console
@@ -14,7 +13,6 @@ from rich.progress import Progress, MofNCompleteColumn, TaskID
 
 from .apt import AptCache, file_to_packages
 from .containers import Container, ContainerProgress, DockerContainer
-from .signals import handle_signals
 
 
 logger = getLogger(__name__)
@@ -76,6 +74,10 @@ class PackageResolutionError(SBOMGenerationError):
 
 
 class PreinstallError(SBOMGenerationError):
+    pass
+
+
+class IrrelevantPackageInstall(SBOMGenerationError):
     pass
 
 
@@ -156,6 +158,7 @@ class SBOMGeneratorStep(Container):
             self.tried_packages = set()
             self._progress = ContainerProgress(*Progress.get_default_columns(), MofNCompleteColumn(),
                                                console=generator.console, transient=True, expand=True)
+        self.command_output: Optional[str] = None
         self.missing_files: List[str] = []
         self._task: Optional[TaskID] = None
 
@@ -182,11 +185,12 @@ class SBOMGeneratorStep(Container):
         try:
             logger.debug(f"apt-strace /log/apt-trace.txt {self.command}")
             exe = self.run(["/log/apt-trace.txt", self.command], entrypoint="/usr/bin/apt-strace", workdir="/workdir")
-            self._progress.execute(exe, title=self.command, scrollback=5)
+            self._progress.execute(exe, title=self.command, subtitle=self.sbom.rich_str, scrollback=5)
             while not exe.done:
                 self._progress.refresh()
                 time.sleep(0.5)
             self.retval = exe.exit_code
+            self.command_output = exe.output
         finally:
             logger.debug(f"Ran, exit code {self.retval}")
         with open(self._logdir / "apt-trace.txt") as log:
@@ -199,6 +203,13 @@ class SBOMGeneratorStep(Container):
             return
         elif not self.missing_files:
             raise NonZeroExit(f"`{self.command}` exited with code {self.retval} without accessing any files")
+        elif isinstance(self.parent, SBOMGeneratorStep) and self.parent.command_output == self.command_output and \
+                self.parent.retval == self.retval:
+            # installing `package` produced the exact same result as before
+            logger.info(f"Installing {', '.join(self.preinstall)} at this point is useless because `{self.command}` "
+                        f"has the same output with or without it")
+            raise IrrelevantPackageInstall(f"`{self.command}` exited with code {self.retval} regardless of the install "
+                                           f"of package(s) {', '.join(self.preinstall)}")
         packages_to_try: List[str] = []
         history: Set[str] = set()
         for file in reversed(self.missing_files):
@@ -270,6 +281,15 @@ class SBOMGeneratorStep(Container):
             if retval != 0:
                 raise PreinstallError(f"Error apt-get installing {' '.join(self.preinstall)}: {output}")
 
+    def _cleanup(self):
+        log_tmpdir = self._log_tmpdir
+        self._logdir = None
+        self._log_tmpdir = None
+        log_tmpdir.__exit__(None, None, None)
+        self._progress.remove_task(self._task)
+        if self.level == 0:
+            self._progress.__exit__(None, None, None)
+
     def start(self):
         assert self._logdir is None
         if self.level == 0:
@@ -284,14 +304,12 @@ class SBOMGeneratorStep(Container):
         self._task = self._progress.add_task(task_name, total=None)
         self._log_tmpdir = TemporaryDirectory()
         self._logdir = Path(self._log_tmpdir.__enter__()).absolute()
-        super().start()
+        try:
+            super().start()
+        except SBOMGenerationError as e:
+            self._cleanup()
+            raise e
 
     def stop(self):
         super().stop()
-        log_tmpdir = self._log_tmpdir
-        self._logdir = None
-        self._log_tmpdir = None
-        log_tmpdir.__exit__(None, None, None)
-        self._progress.remove_task(self._task)
-        if self.level == 0:
-            self._progress.__exit__(None, None, None)
+        self._cleanup()

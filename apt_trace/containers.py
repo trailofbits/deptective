@@ -32,6 +32,7 @@ class Execution:
             raise NotImplementedError("The logging driver for this container is not supported!")
 
         self.exit_code: Optional[int] = None
+        self.output: Optional[bytes] = None
 
         self._checkup_thread = Thread(target=self._checkup)
         self._checkup_thread.start()
@@ -43,6 +44,7 @@ class Execution:
     def _checkup(self):
         try:
             self.exit_code = self.docker_container.wait()["StatusCode"]
+            self.output = self.docker_container.logs(stdout=True, stderr=True)
         finally:
             self.close()
 
@@ -185,7 +187,11 @@ class Container:
     def __enter__(self: C) -> C:
         self._entries += 1
         if self._entries == 1:
-            self.start()
+            try:
+                self.start()
+            except Exception as e:
+                self._entries -= 1
+                raise e
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -198,14 +204,17 @@ class Container:
 class ContainerProgress(Progress):
     _execution: Optional[Execution] = None
     _scrollback: int = 10
-    _exec_title: str = ""
+    _exec_title: Optional[str] = None
+    _exec_subtitle: Optional[str] = None
 
-    def execute(self, execution: Execution, title: str, scrollback: int = 10):
+    def execute(self, execution: Execution, title: Optional[str] = None, subtitle: Optional[str] = None,
+                scrollback: int = 10):
         if self._execution is not None and not self._execution.done:
             raise ValueError("An execution is already assigned to this progress!")
         self._execution = execution
         self._scrollback = scrollback
         self._exec_title = title
+        self._exec_subtitle = subtitle
 
     def get_renderables(self):
         yield self.make_tasks_table(self.tasks)
@@ -221,4 +230,4 @@ class ContainerProgress(Progress):
                         lines.append(repr(line)[2:-1])
                 while lines and not lines[-1].strip():
                     lines.pop()
-                yield Panel("\n".join(lines), title=self._exec_title)
+                yield Panel("\n".join(lines), title=self._exec_title, subtitle=self._exec_subtitle)
