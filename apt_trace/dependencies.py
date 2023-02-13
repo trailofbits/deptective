@@ -70,7 +70,16 @@ class NonZeroExit(SBOMGenerationError):
 
 
 class PackageResolutionError(SBOMGenerationError):
-    pass
+    def __init__(self, message: str, command_output: Optional[bytes] = None):
+        super().__init__(message)
+        self.command_output: Optional[bytes] = command_output
+
+    @property
+    def command_output_str(self) -> Optional[str]:
+        try:
+            return self.command_output.decode("utf-8")
+        except UnicodeDecodeError:
+            return repr(self.command_output)[2:-1]
 
 
 class PreinstallError(SBOMGenerationError):
@@ -158,9 +167,17 @@ class SBOMGeneratorStep(Container):
             self.tried_packages = set()
             self._progress = ContainerProgress(*Progress.get_default_columns(), MofNCompleteColumn(),
                                                console=generator.console, transient=True, expand=True)
-        self.command_output: Optional[str] = None
+        self.command_output: Optional[bytes] = None
         self.missing_files: List[str] = []
         self._task: Optional[TaskID] = None
+
+    @property
+    def missing_files_without_duplicates(self) -> Iterator[str]:
+        history: Set[str] = set()
+        for f in self.missing_files:
+            if f not in history:
+                yield f
+                history.add(f)
 
     @property
     def sbom(self) -> SBOM:
@@ -177,8 +194,8 @@ class SBOMGeneratorStep(Container):
             logger.info(f"Infeasible dependency sequence: {sbom.rich_str}", extra={"markup": True})
             self.generator.infeasible.add(sbom)
         raise PackageResolutionError(f"`{self.command}` exited with code {self.retval} having looked for "
-                                     f"missing files {self.missing_files!r}, none of which are satisfied by "
-                                     f"Ubuntu packages")
+                                     f"missing files {list(self.missing_files_without_duplicates)!r}, none of which "
+                                     f"are satisfied by Ubuntu packages", command_output=self.command_output)
 
     def find_feasible_sboms(self) -> Iterator[SBOM]:
         logger.debug(f"Running step {self.level}...")

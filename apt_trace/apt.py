@@ -10,6 +10,8 @@ import urllib.request
 from appdirs import AppDirs
 import rich.progress
 
+from .logs import get_console
+
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +60,9 @@ class AptCache:
                 self._contents_db = self.LOADED[key]._contents_db
             elif self._contents_db_cache.exists():
                 logger.info(f"Loading cached APT sources for Ubuntu {self.ubuntu_version} {self.arch}")
-                with rich.progress.open(self._contents_db_cache, 'rb', transient=True) as f:
+                with rich.progress.open(
+                        self._contents_db_cache, 'rb', transient=True, console=get_console(logger)
+                ) as f:
                     self._contents_db = pickle.load(f)
             else:
                 self._contents_db = {}

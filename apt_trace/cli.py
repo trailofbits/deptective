@@ -6,8 +6,9 @@ from typing import List, Optional, Sequence
 from rich import traceback
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.panel import Panel
 
-from .dependencies import SBOMGenerationError, SBOM, SBOMGenerator
+from .dependencies import PackageResolutionError, SBOMGenerationError, SBOM, SBOMGenerator
 
 
 logger = logging.getLogger(__name__)
@@ -58,12 +59,15 @@ def main(args: Optional[Sequence[str]] = None) -> int:
 
     results: List[SBOM] = []
 
+    # rich has a tendency to gobble stdout, so save the old one before proceeding:
+    old_stdout = sys.stdout
+
     try:
         for i, sbom in enumerate(SBOMGenerator(console=console).main(" ".join(args.command))):
-            if not sys.stdout.isatty():
-                sys.stdout.write(str(sbom))
-                sys.stdout.write("\n")
-                sys.stdout.flush()
+            if not old_stdout.isatty():
+                old_stdout.write(str(sbom))
+                old_stdout.write("\n")
+                old_stdout.flush()
             else:
                 results.append(sbom)
             logger.info(f"[bold white]Satisfying Dependencies:[/bold white] {sbom.rich_str}", extra={"markup": True})
@@ -71,13 +75,15 @@ def main(args: Optional[Sequence[str]] = None) -> int:
                 break
     except SBOMGenerationError as e:
         logger.error(str(e))
+        if isinstance(e, PackageResolutionError) and e.command_output is not None and e.command_output:
+            console.print(Panel(e.command_output_str, title=f"`{' '.join(args.command)}` Output"))
         return 1
     except KeyboardInterrupt:
         return 1
 
     for sbom in results:
-        sys.stdout.write(str(sbom))
-        sys.stdout.write("\n")
-    sys.stdout.flush()
+        old_stdout.write(str(sbom))
+        old_stdout.write("\n")
+    old_stdout.flush()
 
     return 0
