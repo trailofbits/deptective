@@ -312,7 +312,7 @@ class SBOMGeneratorStep(Container):
         if self.level == 0:
             # make sure that we pre-load the apt cache before starting our task, otherwise `rich` will mess
             # up its progress bars
-            _ = AptCache.get().contents_db
+            AptCache.get().preload()
             self._progress.__enter__()
         if not self.preinstall:
             task_name = f":magnifying_glass_tilted_right: {self.command}"

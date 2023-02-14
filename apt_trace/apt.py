@@ -1,16 +1,16 @@
+from abc import abstractmethod
 import functools
 import gzip
 import logging
 from pathlib import Path
 import pickle
 import re
-from typing import Dict, Optional, Set, Union, Tuple
-import urllib.request
+from typing import Dict, FrozenSet, Iterable, Iterator, Optional, Set, Union, Tuple, Type, TypeVar
 
 from appdirs import AppDirs
 import rich.progress
 
-from .logs import get_console
+from .logs import DownloadWithProgress, get_console
 
 
 logger = logging.getLogger(__name__)
@@ -22,67 +22,195 @@ if not CACHE_DIR.exists():
     CACHE_DIR.mkdir(parents=True)
 
 
+C = TypeVar("C")
+
+
 class AptCache:
     LOADED: Dict[Tuple[str, str], "AptCache"] = {}
+    VERSIONS: Dict[int, Type["AptCache"]] = {}
 
     def __init__(self, arch: str = "amd64", ubuntu_version: str = "kinetic"):
         self.arch: str = arch
         self.ubuntu_version: str = ubuntu_version
-        self._contents_db: Optional[Dict[bytes, Set[str]]] = None
-        self._contents_db_cache: Path = CACHE_DIR / f"{ubuntu_version}_{arch}_contents.pkl"
 
     def __contains__(self, filename: Union[str, bytes, Path]):
-        return self[filename]
+        return bool(self[filename])
+
+    @abstractmethod
+    def __iter__(self) -> Iterator[Tuple[str, Set[str]]]:
+        raise NotImplementedError()
 
     def __getitem__(self, filename: Union[str, bytes, Path]) -> Set[str]:
         if isinstance(filename, Path):
             filename = str(filename)
-        if isinstance(filename, str):
-            filename = filename.encode("utf-8")
-        if filename.startswith(b"/"):
+        elif isinstance(filename, bytes):
+            filename = filename.decode("utf-8")
+        if filename.startswith("/"):
             filename = filename[1:]  # the contents paths do not start with a leading slash
-        if filename in self.contents_db:
-            return self.contents_db[filename]
+        return self.packages_providing(filename)
+
+    @abstractmethod
+    def exists(self) -> bool:
+        raise NotImplementedError()
+
+    @abstractmethod
+    def packages_providing(self, filename: str) -> Set[str]:
+        raise NotImplementedError()
+
+    def __init_subclass__(cls, **kwargs):
+        version = cls.get_version()
+        if version in AptCache.VERSIONS:
+            raise TypeError(f"{cls.__name__} is version {version}, but that version is already associated with "
+                            f"{AptCache.VERSIONS[version].__name__}")
+        AptCache.VERSIONS[version] = cls
+        return super().__init_subclass__(**kwargs)
+
+    def download(self) -> Iterator[Tuple[str, FrozenSet[str]]]:
+        contents_url = f"http://security.ubuntu.com/ubuntu/dists/" \
+                       f"{self.ubuntu_version}/Contents-{self.arch}.gz"
+        logger.info(f"Downloading {contents_url}\nThis is a one-time download and may take a few minutes.")
+        contents_pattern = re.compile(r"(\S+)\s+(\S.*)")
+        with DownloadWithProgress(contents_url) as p, gzip.open(p, "rb") as gz:  # type: ignore
+            for line in gz.readlines():
+                m = contents_pattern.match(line.decode("utf-8"))
+                if not m:
+                    raise ValueError(f"Unexpected line: {line!r}")
+                filename = m.group(1)
+                packages = frozenset(pkg.split("/")[-1].strip() for pkg in m.group(2).split(","))
+                yield filename, packages
+
+    def preload(self):
+        pass
+
+    @classmethod
+    @abstractmethod
+    def get_version(cls) -> int:
+        raise NotImplementedError()
+
+    @classmethod
+    def latest_version(cls) -> int:
+        return max(AptCache.VERSIONS.keys())
+
+    @classmethod
+    def next_newest_version(cls) -> Optional[Type["AptCache"]]:
+        our_version = cls.get_version()
+        later_versions = {v for v in AptCache.VERSIONS.keys() if v > our_version}
+        if later_versions:
+            return AptCache.VERSIONS[min(later_versions)]
         else:
-            return set()
+            return None
+
+    @classmethod
+    @abstractmethod
+    def load(cls: Type[C], arch:str, ubuntu_version:str, packages: Iterable[Tuple[str, Iterable[str]]]) -> C:
+        raise NotImplementedError()
+
+    def upgrade_to_latest(self) -> "AptCache":
+        ret = self
+        while True:
+            next_newest = ret.next_newest_version()
+            if next_newest is None:
+                break
+            prev = ret
+            ret = next_newest.load(arch=self.arch, ubuntu_version=self.ubuntu_version, packages=prev)
+            prev.delete()
+        return ret
 
     @classmethod
     def get(cls, arch: str = "amd64", ubuntu_version: str = "kinetic") -> "AptCache":
         if (arch, ubuntu_version) not in cls.LOADED:
-            cls.LOADED[(arch, ubuntu_version)] = AptCache(arch, ubuntu_version)
+            all_versions: Dict[int, AptCache] = {
+                v: c(arch, ubuntu_version)
+                for v, c in AptCache.VERSIONS.items()
+            }
+            existing_versions: Dict[int, AptCache] = {
+                v: c
+                for v, c in all_versions.items()
+                if c.exists()
+            }
+            if not existing_versions:
+                cls.LOADED[(arch, ubuntu_version)] = AptCache.VERSIONS[cls.latest_version()](arch, ubuntu_version)
+            else:
+                latest_existing_version = max(existing_versions.keys())
+                cls.LOADED[(arch, ubuntu_version)] = existing_versions[latest_existing_version].upgrade_to_latest()
         return cls.LOADED[(arch, ubuntu_version)]
 
-    @property
-    def contents_db(self) -> Dict[bytes, Set[str]]:
-        if self._contents_db is None:
+    @abstractmethod
+    def delete(self):
+        raise NotImplementedError()
+
+
+class AptCacheV1(AptCache):
+    def __init__(self, arch: str = "amd64", ubuntu_version: str = "kinetic"):
+        super().__init__(arch=arch, ubuntu_version=ubuntu_version)
+        self._contents_db: Optional[Dict[bytes, FrozenSet[str]]] = None
+        self._contents_db_cache: Path = CACHE_DIR / f"{ubuntu_version}_{arch}_contents.pkl"
+
+    def __iter__(self) -> Iterator[Tuple[str, FrozenSet[str]]]:
+        self.preload()
+        yield from ((f.decode("utf-8"), s) for f, s in self._contents_db.items())
+
+    @classmethod
+    def get_version(cls) -> int:
+        return 1
+
+    @classmethod
+    def load(
+            cls: Type["AptCacheV1"], arch:str, ubuntu_version:str, packages: Iterable[Tuple[str, Iterable[str]]]
+    ) -> "AptCacheV1":
+        ret = cls(arch=arch, ubuntu_version=ubuntu_version)
+        ret._contents_db = {
+            f.encode("utf-8"): frozenset(p)
+            for f, p in packages
+        }
+        return ret
+
+    def exists(self) -> bool:
+        return self._contents_db is not None or self._contents_db_cache.exists()
+
+    def delete(self):
+        if self._contents_db_cache.exists():
+            self._contents_db_cache.unlink()
+        self._contents_db = None
+
+    def preload(self):
+        if self._contents_db is not None:
+            return
+        elif not self.exists():
+            existing_load: Optional[AptCache] = None
+            self._contents_db = self.load(
+                arch=self.arch, ubuntu_version=self.ubuntu_version, packages=self.download()
+            )._contents_db
+            with open(self._contents_db_cache, 'wb') as contents_db_fd:
+                pickle.dump(self._contents_db, contents_db_fd)
+        else:
             key = (self.arch, self.ubuntu_version)
-            if key in self.LOADED and self.LOADED[key]._contents_db is not None:
-                self._contents_db = self.LOADED[key]._contents_db
-            elif self._contents_db_cache.exists():
-                logger.info(f"Loading cached APT sources for Ubuntu {self.ubuntu_version} {self.arch}")
-                with rich.progress.open(
-                        self._contents_db_cache, 'rb', transient=True, console=get_console(logger)
-                ) as f:
-                    self._contents_db = pickle.load(f)
+            if key in self.LOADED:
+                existing_load = self.LOADED[key]
+                if isinstance(existing_load, AptCacheV1) and existing_load._contents_db is not None:
+                    self._contents_db = existing_load._contents_db
+                    return
+                if existing_load is self:
+                    existing_load = None
             else:
-                self._contents_db = {}
-                contents_url = f"http://security.ubuntu.com/ubuntu/dists/" \
-                               f"{self.ubuntu_version}/Contents-{self.arch}.gz"
-                logger.info(f"Downloading {contents_url}\nThis is a one-time download and may take a few minutes.")
-                response = urllib.request.urlopen(contents_url)
-                contents_pattern = re.compile(r"(\S+)\s+(\S.*)")
-                for line in gzip.decompress(response.read()).decode("utf-8").splitlines():
-                    m = contents_pattern.match(line)
-                    if not m:
-                        raise ValueError(f"Unexpected line: {line!r}")
-                    filename = m.group(1).encode("utf-8")
-                    packages = (pkg.split("/")[-1].strip() for pkg in m.group(1).split(","))
-                    self._contents_db.setdefault(filename, set()).update(packages)
-                with open(self._contents_db_cache, 'wb') as contents_db_fd:
-                    pickle.dump(self._contents_db, contents_db_fd)
-            if key in self.LOADED and self.LOADED[key]._contents_db is None:
-                self.LOADED[key]._contents_db = self._contents_db
-        return self._contents_db
+                existing_load = None
+            assert self._contents_db_cache.exists()
+            logger.info(f"Loading cached APT sources for Ubuntu {self.ubuntu_version} {self.arch}")
+            with rich.progress.open(
+                    self._contents_db_cache, 'rb', transient=True, console=get_console(logger)
+            ) as f:
+                self._contents_db = pickle.load(f)
+        if isinstance(existing_load, AptCacheV1):
+            assert existing_load._contents_db is None
+            existing_load._contents_db = self._contents_db
+
+    def packages_providing(self, filename: str) -> FrozenSet[str]:
+        self.preload()
+        f = filename.encode("utf-8")
+        if f in self._contents_db:
+            return self._contents_db[f]
+        else:
+            return frozenset()
 
 
 @functools.lru_cache(maxsize=128)
