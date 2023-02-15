@@ -1,7 +1,6 @@
-from functools import partial
 from logging import Handler, Logger, getLogger
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import BinaryIO, Iterator, Optional
 from urllib.parse import urlparse
 import urllib.request
 
@@ -94,14 +93,30 @@ class DownloadWithProgress:
         self.progress.console.log(f"Downloaded {self.filename}")
 
 
+def stream_iterator(stream: BinaryIO, chunk_size: int = 32768) -> Iterator[bytes]:
+    while True:
+        b = stream.read(chunk_size)
+        if b:
+            yield b
+        else:
+            break
+
+
+def iterative_readlines(stream: BinaryIO) -> Iterator[bytes]:
+    return stream_lines(stream_iterator(stream))
+
+
 def stream_lines(data: Iterator[bytes]) -> Iterator[bytes]:
     prev_line: bytes = b""
     for chunk in data:
         lines = chunk.split(b"\n")
-        if len(lines) == 1 and not lines[0]:
-            if prev_line:
-                yield prev_line
-                prev_line = b""
+        if len(lines) == 1:
+            if not lines[0]:
+                if prev_line:
+                    yield prev_line
+                    prev_line = b""
+            else:
+                prev_line = prev_line + lines[0]
         else:
             yield prev_line + lines[0]
             yield from lines[1:-1]
@@ -109,7 +124,6 @@ def stream_lines(data: Iterator[bytes]) -> Iterator[bytes]:
                 # the chunk did not end with a newline
                 prev_line = lines[-1]
             else:
-                yield lines[-1]
                 prev_line = b""
     if prev_line:
         yield prev_line

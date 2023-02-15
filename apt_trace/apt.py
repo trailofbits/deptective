@@ -5,12 +5,13 @@ import logging
 from pathlib import Path
 import pickle
 import re
+import sqlite3
 from typing import Dict, FrozenSet, Iterable, Iterator, Optional, Set, Union, Tuple, Type, TypeVar
 
 from appdirs import AppDirs
 import rich.progress
 
-from .logs import DownloadWithProgress, get_console
+from .logs import DownloadWithProgress, get_console, iterative_readlines
 
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ class AptCache:
     def __iter__(self) -> Iterator[Tuple[str, Set[str]]]:
         raise NotImplementedError()
 
-    def __getitem__(self, filename: Union[str, bytes, Path]) -> Set[str]:
+    def __getitem__(self, filename: Union[str, bytes, Path]) -> FrozenSet[str]:
         if isinstance(filename, Path):
             filename = str(filename)
         elif isinstance(filename, bytes):
@@ -54,7 +55,7 @@ class AptCache:
         raise NotImplementedError()
 
     @abstractmethod
-    def packages_providing(self, filename: str) -> Set[str]:
+    def packages_providing(self, filename: str) -> FrozenSet[str]:
         raise NotImplementedError()
 
     def __init_subclass__(cls, **kwargs):
@@ -71,13 +72,17 @@ class AptCache:
         logger.info(f"Downloading {contents_url}\nThis is a one-time download and may take a few minutes.")
         contents_pattern = re.compile(r"(\S+)\s+(\S.*)")
         with DownloadWithProgress(contents_url) as p, gzip.open(p, "rb") as gz:  # type: ignore
-            for line in gz.readlines():
+            for line in iterative_readlines(gz):  # type: ignore
                 m = contents_pattern.match(line.decode("utf-8"))
                 if not m:
                     raise ValueError(f"Unexpected line: {line!r}")
                 filename = m.group(1)
                 packages = frozenset(pkg.split("/")[-1].strip() for pkg in m.group(2).split(","))
                 yield filename, packages
+
+    @abstractmethod
+    def save(self):
+        raise NotImplementedError()
 
     def preload(self):
         pass
@@ -112,8 +117,11 @@ class AptCache:
             if next_newest is None:
                 break
             prev = ret
+            logger.info(f"Upgrading from APT cache version {ret.get_version()} to {next_newest.get_version()}...")
             ret = next_newest.load(arch=self.arch, ubuntu_version=self.ubuntu_version, packages=prev)
+            ret.save()
             prev.delete()
+            logger.info("[bold green]Upgraded!", extra={"markup": True})
         return ret
 
     @classmethod
@@ -156,7 +164,7 @@ class AptCacheV1(AptCache):
 
     @classmethod
     def load(
-            cls: Type["AptCacheV1"], arch:str, ubuntu_version:str, packages: Iterable[Tuple[str, Iterable[str]]]
+            cls: Type["AptCacheV1"], arch: str, ubuntu_version: str, packages: Iterable[Tuple[str, Iterable[str]]]
     ) -> "AptCacheV1":
         ret = cls(arch=arch, ubuntu_version=ubuntu_version)
         ret._contents_db = {
@@ -173,6 +181,12 @@ class AptCacheV1(AptCache):
             self._contents_db_cache.unlink()
         self._contents_db = None
 
+    def save(self):
+        if self._contents_db is None:
+            self.preload()
+        with open(self._contents_db_cache, 'wb') as contents_db_fd:
+            pickle.dump(self._contents_db, contents_db_fd)
+
     def preload(self):
         if self._contents_db is not None:
             return
@@ -181,8 +195,7 @@ class AptCacheV1(AptCache):
             self._contents_db = self.load(
                 arch=self.arch, ubuntu_version=self.ubuntu_version, packages=self.download()
             )._contents_db
-            with open(self._contents_db_cache, 'wb') as contents_db_fd:
-                pickle.dump(self._contents_db, contents_db_fd)
+            self.save()
         else:
             key = (self.arch, self.ubuntu_version)
             if key in self.LOADED:
@@ -213,12 +226,110 @@ class AptCacheV1(AptCache):
             return frozenset()
 
 
+class AptCacheV2(AptCache):
+    def __init__(self, arch: str = "amd64", ubuntu_version: str = "kinetic"):
+        super().__init__(arch=arch, ubuntu_version=ubuntu_version)
+        self._contents_db: Optional[Dict[bytes, FrozenSet[str]]] = None
+        self._contents_db_path: Path = CACHE_DIR / f"{ubuntu_version}_{arch}_contents.sqlite3"
+        self.conn: Optional[sqlite3.Connection] = None
+
+    def __iter__(self) -> Iterator[Tuple[str, FrozenSet[str]]]:
+        self.preload()
+        cur = self.conn.cursor()
+        res = cur.execute("SELECT filename, package FROM files GROUP BY filename")
+        filename: Optional[str] = None
+        packages: Set[str] = set()
+        while True:
+            results = res.fetchmany(1024)
+            if not results:
+                break
+            for f, package in results:
+                if filename is None:
+                    filename = f
+                if filename == f:
+                    packages.add(package)
+                else:
+                    if len(packages) > 1:
+                        breakpoint()
+                    yield filename, frozenset(packages)
+                    filename = None
+                    packages = set()
+        if filename is not None:
+            yield filename, frozenset(packages)
+
+    def exists(self) -> bool:
+        return self._contents_db_path.exists()
+
+    def packages_providing(self, filename: str) -> FrozenSet[str]:
+        self.preload()
+        cur = self.conn.cursor()
+        res = cur.execute("SELECT package FROM files WHERE filename = ?", (filename,))
+        return frozenset(c[0] for c in res.fetchall())
+
+    @classmethod
+    def get_version(cls) -> int:
+        return 2
+
+    def preload(self):
+        if self.conn is not None:
+            return
+        elif not self.exists():
+            assert self.conn is None
+            loaded = self.load(arch=self.arch, ubuntu_version=self.ubuntu_version, packages=self.download(),
+                               in_memory=False)
+            loaded.conn.close()
+            assert self.exists()
+        self.conn = sqlite3.connect(str(self._contents_db_path))
+
+    def _create_tables(self):
+        assert self.conn is not None
+        cur = self.conn.cursor()
+        cur.execute("""CREATE TABLE files(
+            filename TEXT NOT NULL,
+            package TEXT NOT NULL
+        )""")
+        cur.execute("CREATE INDEX filenames ON files(filename)")
+        cur.execute("CREATE INDEX packages ON files(package)")
+        self.conn.commit()
+
+    def save(self):
+        if not self._contents_db_path.exists():
+            self.load(arch=self.arch, ubuntu_version=self.ubuntu_version, packages=self, in_memory=False).conn.close()
+        assert self._contents_db_path.exists()
+
+    @classmethod
+    def load(
+            cls: Type["AptCacheV2"], arch: str, ubuntu_version: str, packages: Iterable[Tuple[str, Iterable[str]]],
+            in_memory: bool = True
+    ) -> "AptCacheV2":
+        ret = cls(arch=arch, ubuntu_version=ubuntu_version)
+        if in_memory:
+            ret.conn = sqlite3.connect(":memory:")
+        else:
+            ret.conn = sqlite3.connect(str(ret._contents_db_path))
+        try:
+            ret._create_tables()
+            with ret.conn:
+                for filename, pkgs in packages:
+                    ret.conn.executemany("INSERT INTO files(filename, package) VALUES(?, ?)", [
+                        (filename, package) for package in pkgs
+                    ])
+            return ret
+        except:
+            if not in_memory and ret._contents_db_path.exists():
+                ret._contents_db_path.unlink()
+            raise
+
+    def delete(self):
+        self._contents_db_path.unlink()
+
+
 @functools.lru_cache(maxsize=128)
 def file_to_packages(
         filename: Union[str, bytes, Path], arch: str = "amd64", ubuntu_version: str = "kinetic"
-) -> Tuple[str, ...]:
+) -> FrozenSet[str]:
     logger.debug(f"searching for packages associated with {filename!r}")
     cache = AptCache.get(arch, ubuntu_version)
-    result = tuple(cache[filename])
+    result = cache[filename]
     logger.debug(f"File {filename!r} is associated with packages {result!r}")
     return result
