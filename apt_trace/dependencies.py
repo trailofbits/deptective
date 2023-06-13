@@ -239,7 +239,7 @@ class SBOMGeneratorStep(Container):
         yielded = False
         last_error: Optional[SBOMGenerationError] = None
         self._progress.update(self._task, total=len(packages_to_try))
-        for package in packages_to_try:
+        for package in sorted(packages_to_try):
             try:
                 step = SBOMGeneratorStep(self.generator, self.command, preinstall=(package,), parent=self)
                 if step.sbom in self.generator.infeasible:
