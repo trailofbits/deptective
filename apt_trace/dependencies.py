@@ -118,8 +118,7 @@ class SBOMGenerator:
 
     @property
     def apt_strace_image(self) -> Image:
-        client = docker.from_env()
-        for image in client.images.list(name="trailofbits/apt-strace"):
+        for image in self.client.images.list(name="trailofbits/apt-strace"):
             history = image.history()
             if history:
                 creation_time = max(c["Created"] for c in image.history())
@@ -131,7 +130,7 @@ class SBOMGenerator:
                     break
             return image
         # we need to build the image!
-        return client.images.build(path=str(APT_STRACE_DIR), tag="trailofbits/apt-strace", rm=True, pull=True)[0]
+        return self.client.images.build(path=str(APT_STRACE_DIR), tag="trailofbits/apt-strace", rm=True, pull=True)[0]
 
     def main(self, command: str) -> Iterator[SBOM]:
         with SBOMGeneratorStep(self, command) as step:

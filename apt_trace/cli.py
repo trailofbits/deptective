@@ -8,6 +8,8 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
 
+from textwrap import dedent
+
 from .dependencies import PackageResolutionError, SBOMGenerationError, SBOM, SBOMGenerator
 
 
@@ -70,7 +72,11 @@ def main(args: Optional[Sequence[str]] = None) -> int:
                 old_stdout.flush()
             else:
                 results.append(sbom)
-            logger.info(f"[bold white]Satisfying Dependencies:[/bold white] {sbom.rich_str}", extra={"markup": True})
+            logger.info(dedent(f"""\
+            [bold white]Satisfying dependencies:[/bold white] {sbom.rich_str}
+            [bold white]Install with:[/bold white] apt-get install {' '.join(sbom)}"""),
+                        extra={"markup": True})
+
             if not args.all and 0 < args.num_results and i == args.num_results - 1:
                 break
     except SBOMGenerationError as e:

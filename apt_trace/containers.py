@@ -1,5 +1,6 @@
 import logging
 from threading import Thread
+import functools
 import time
 from typing import Dict, List, Optional, TypeVar, Union
 
@@ -24,32 +25,38 @@ C = TypeVar("C")
 class Execution:
     def __init__(self, container: "Container", docker_container: DockerContainer):
         self.container: Container = container
-        self.docker_container: Optional[DockerContainer] = docker_container
+        self.docker_container: DockerContainer = docker_container
+        self._closed = False
 
         logging_driver = docker_container.attrs['HostConfig']['LogConfig']['Type']
 
         if logging_driver != "json-file" and logging_driver != "journald":
             raise NotImplementedError("The logging driver for this container is not supported!")
 
-        self.exit_code: Optional[int] = None
-        self.output: Optional[bytes] = None
-
-        self._checkup_thread = Thread(target=self._checkup)
-        self._checkup_thread.start()
-
     @property
     def done(self) -> bool:
-        return self.exit_code is not None or self.docker_container is None
+        # If we are closed, then we are definitely done.
+        if self._closed:
+            return True
 
-    def _checkup(self):
+        # Refresh and check the container metadata.
+        self.docker_container.reload()
+        return self.docker_container.status == "exited"
+
+    @functools.cached_property
+    def exit_code(self) -> int:
+        return self.docker_container.wait()["StatusCode"]
+
+    @functools.cached_property
+    def output(self) -> int:
         try:
-            self.exit_code = self.docker_container.wait()["StatusCode"]
-            self.output = self.docker_container.logs(stdout=True, stderr=True)
+            self.exit_code
+            return self.docker_container.logs(stdout=True, stderr=True)
         finally:
             self.close()
 
     def close(self):
-        if self.docker_container is None:
+        if self._closed:
             raise ValueError("The container is already closed!")
         try:
             self.docker_container.remove(force=True)
@@ -57,11 +64,11 @@ class Execution:
             self.docker_container.wait(condition="removed")
         except NotFound:
             logger.debug(f"Container {self.docker_container.id} was already removed")
-        self.docker_container = None
         self.container.__exit__(None, None, None)
+        self._closed = True
 
     def logs(self, scrollback: int = -1) -> bytes:
-        if self.docker_container is None:
+        if self._closed:
             return b""
         if scrollback < 0:
             tail = "all"
@@ -84,7 +91,7 @@ class Container:
         elif isinstance(parent, Container):
             self.client = parent.client
         else:
-            self.client = docker.from_env()
+            self.client = docker.from_env(timeout=5)
         if isinstance(parent, str):
             if image_name is None:
                 if ":" in parent:
@@ -141,7 +148,7 @@ class Container:
                 container.start()
 
                 return Execution(self, container)  # this calls self.__exit__(...) when it is complete
-            except:
+            except Exception as e:
                 try:
                     container.remove(force=True)
                     logger.debug(f"Waiting for container {container.id} to be removed...")
@@ -156,6 +163,7 @@ class Container:
             raise ValueError(f"The container is already started!")
         if isinstance(self.parent, Container):
             _ = self.parent.__enter__()
+
         container = self.client.containers.run(
             image=self.parent_image, entrypoint="/bin/bash", detach=True, remove=True, tty=True, read_only=False,
             volumes=self.volumes
