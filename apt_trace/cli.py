@@ -1,7 +1,7 @@
 import argparse
 import logging
 import sys
-from typing import List, Optional, Sequence
+from typing import List
 
 from rich import traceback
 from rich.console import Console
@@ -21,7 +21,7 @@ from .dependencies import (
 logger = logging.getLogger(__name__)
 
 
-def main(args: Optional[Sequence[str]] = None) -> int:
+def main() -> int:
     parser = argparse.ArgumentParser()
     results_group = parser.add_mutually_exclusive_group()
     results_group.add_argument(
@@ -64,17 +64,18 @@ def main(args: Optional[Sequence[str]] = None) -> int:
         help="equivalent to `--log-level=CRITICAL`",
     )
 
-    args = parser.parse_args(args)
+    args = parser.parse_args()
 
     if args.debug:
         numeric_log_level = logging.DEBUG
     elif args.quiet:
         numeric_log_level = logging.CRITICAL
     else:
-        numeric_log_level = getattr(logging, args.log_level.upper(), None)
-        if not isinstance(numeric_log_level, int):
+        log_level = getattr(logging, args.log_level.upper(), None)
+        if not isinstance(log_level, int):
             sys.stderr.write(f"Invalid log level: {args.log_level}\n")
             exit(1)
+        numeric_log_level = log_level
 
     console = Console(log_path=False, file=sys.stderr)
 
@@ -120,14 +121,16 @@ def main(args: Optional[Sequence[str]] = None) -> int:
             and e.command_output is not None
             and e.command_output
         ):
-            console.print(
-                Panel(
-                    e.command_output_str,
-                    title=f"`{' '.join(args.command)}` Output",
+            if e.command_output_str:
+                console.print(
+                    Panel(
+                        e.command_output_str,
+                        title=f"`{' '.join(args.command)}` Output",
+                    )
                 )
-            )
         return 1
     except KeyboardInterrupt:
+        console.show_cursor()
         return 1
 
     for sbom in results:

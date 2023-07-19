@@ -1,6 +1,6 @@
 import logging
 import functools
-from typing import Dict, Generic, List, Literal, Optional, Self, TypeVar, Union
+from typing import Dict, List, Literal, Optional, Self, TypeVar, Union
 
 import docker
 from docker.client import DockerClient
@@ -48,7 +48,7 @@ class Execution:
         return self.docker_container.wait()["StatusCode"]
 
     @functools.cached_property
-    def output(self) -> int:
+    def output(self) -> bytes:
         try:
             self.exit_code
             return self.docker_container.logs(stdout=True, stderr=True)
@@ -73,7 +73,7 @@ class Execution:
         if self._closed:
             return b""
         if scrollback < 0:
-            tail: int | Literal['all'] = "all"
+            tail: int | Literal["all"] = "all"
         else:
             tail = scrollback
         return self.docker_container.logs(stdout=True, stderr=True, tail=tail)
@@ -143,7 +143,7 @@ class Container:
         command: Union[str, List[str]],
         workdir: str = "/workdir",
         entrypoint: str = "/bin/bash",
-    ) -> Execution | None:
+    ) -> Execution:
         self.__enter__()
         try:
             image = self.image.id
@@ -171,10 +171,13 @@ class Container:
                         f"Waiting for container {container.id} to be removed..."
                     )
                     container.wait(condition="removed")
+                    raise
                 except NotFound:
                     logger.debug(f"Container {container.id} was already removed")
+                    raise
         except RuntimeError as e:
             self.__exit__(type(e), e, None)
+            raise
 
     def start(self):
         if self._image is not None:

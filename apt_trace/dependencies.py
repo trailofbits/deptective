@@ -21,7 +21,7 @@ import randomname
 from rich.console import Console
 from rich.progress import Progress, MofNCompleteColumn, TaskID
 
-from .apt import AptCache, file_to_packages
+from .apt import file_to_packages, prime_caches
 from .containers import Container, ContainerProgress, DockerContainer
 
 
@@ -80,12 +80,15 @@ class NonZeroExit(SBOMGenerationError):
 
 
 class PackageResolutionError(SBOMGenerationError):
-    def __init__(self, message: str, command_output: Optional[bytes] = None):
+    def __init__(self, message: str, command_output: bytes | None = None):
         super().__init__(message)
-        self.command_output: Optional[bytes] = command_output
+        self.command_output: bytes | None = command_output
 
     @property
-    def command_output_str(self) -> Optional[str]:
+    def command_output_str(self) -> str | None:
+        if not self.command_output:
+            return None
+
         try:
             return self.command_output.decode("utf-8")
         except UnicodeDecodeError:
@@ -382,7 +385,8 @@ class SBOMGeneratorStep(Container):
         if self.level == 0:
             # make sure that we pre-load the apt cache before starting our task,
             # otherwise `rich` will mess up its progress bars
-            AptCache.get().preload()
+            # AptCache.get().preload()
+            prime_caches()
             self._progress.__enter__()
         if not self.preinstall:
             task_name = f":magnifying_glass_tilted_right: {self.command}"
@@ -393,7 +397,7 @@ class SBOMGeneratorStep(Container):
             )
         self._task = self._progress.add_task(task_name, total=None)
         self._log_tmpdir = TemporaryDirectory()
-        self._logdir = Path(self._log_tmpdir.__enter__()).absolute()
+        self._logdir = Path(self._log_tmpdir.name).absolute()
         try:
             super().start()
         except SBOMGenerationError as e:
