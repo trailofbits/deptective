@@ -1,3 +1,4 @@
+import io
 from logging import Handler, Logger, getLogger
 from pathlib import Path
 from typing import BinaryIO, Iterator, Optional
@@ -34,7 +35,7 @@ def get_console(logger: Logger) -> Console:
     raise ValueError
 
 
-class Download:
+class Download(io.RawIOBase):
     def __init__(self, progress: "DownloadWithProgress"):
         self._progress: DownloadWithProgress = progress
         self._task_id: TaskID = progress.progress.add_task(
@@ -55,7 +56,7 @@ class Download:
             f"'{self.__class__.__name__}' object has no attribute '{item!s}'"
         )
 
-    def read(self, size: int) -> bytes | None:
+    def read(self, size: int = -1, /) -> bytes | None:
         ret = self._response.read(size)
         self._progress.progress.update(self._task_id, advance=len(ret))
         return ret
