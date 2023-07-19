@@ -1,8 +1,6 @@
 import logging
-from threading import Thread
 import functools
-import time
-from typing import Dict, List, Optional, TypeVar, Union
+from typing import Dict, Generic, List, Literal, Optional, Self, TypeVar, Union
 
 import docker
 from docker.client import DockerClient
@@ -28,10 +26,12 @@ class Execution:
         self.docker_container: DockerContainer = docker_container
         self._closed = False
 
-        logging_driver = docker_container.attrs['HostConfig']['LogConfig']['Type']
+        logging_driver = docker_container.attrs["HostConfig"]["LogConfig"]["Type"]
 
         if logging_driver != "json-file" and logging_driver != "journald":
-            raise NotImplementedError("The logging driver for this container is not supported!")
+            raise NotImplementedError(
+                "The logging driver for this container is not supported!"
+            )
 
     @property
     def done(self) -> bool:
@@ -60,7 +60,9 @@ class Execution:
             raise ValueError("The container is already closed!")
         try:
             self.docker_container.remove(force=True)
-            logger.debug(f"Waiting for container {self.docker_container.id} to be removed...")
+            logger.debug(
+                f"Waiting for container {self.docker_container.id} to be removed..."
+            )
             self.docker_container.wait(condition="removed")
         except NotFound:
             logger.debug(f"Container {self.docker_container.id} was already removed")
@@ -71,7 +73,7 @@ class Execution:
         if self._closed:
             return b""
         if scrollback < 0:
-            tail = "all"
+            tail: int | Literal['all'] = "all"
         else:
             tail = scrollback
         return self.docker_container.logs(stdout=True, stderr=True, tail=tail)
@@ -79,10 +81,10 @@ class Execution:
 
 class Container:
     def __init__(
-            self: C,
-            parent: Optional[Union[C, Image, str]],
-            client: Optional[DockerClient] = None,
-            image_name: Optional[str] = None
+        self,
+        parent: Optional[Union[Self, Image, str]],
+        client: Optional[DockerClient] = None,
+        image_name: Optional[str] = None,
     ):
         self._image: Optional[Image] = None
         self._entries: int = 0
@@ -95,12 +97,12 @@ class Container:
         if isinstance(parent, str):
             if image_name is None:
                 if ":" in parent:
-                    base_name = parent[:parent.find(":")]
+                    base_name = parent[: parent.find(":")]
                 else:
                     base_name = parent
                 image_name = f"{base_name}-{randomname.get_name()}"
             parent = self.client.images.get(parent)
-        self.parent: Union[C, Image] = parent
+        self.parent = parent
         if isinstance(parent, Container):
             self.level: int = parent.level + 1
             if image_name is None:
@@ -115,7 +117,9 @@ class Container:
     def parent_image(self) -> Image:
         if isinstance(self.parent, Image):
             return self.parent
-        return self.parent.image
+        elif isinstance(self.parent, Container):
+            return self.parent.image
+        raise ValueError
 
     @property
     def image(self) -> Image:
@@ -135,23 +139,37 @@ class Container:
         pass
 
     def run(
-            self, command: Union[str, List[str]], workdir: str = "/workdir", entrypoint: str = "/bin/bash"
-    ) -> Execution:
+        self,
+        command: Union[str, List[str]],
+        workdir: str = "/workdir",
+        entrypoint: str = "/bin/bash",
+    ) -> Execution | None:
         self.__enter__()
         try:
             image = self.image.id
 
-            container = self.client.containers.create(image=image, command=command, tty=True, read_only=False,
-                                                      detach=True, volumes=self.volumes, working_dir=workdir,
-                                                      entrypoint=entrypoint)
+            container = self.client.containers.create(
+                image=image,
+                command=command,
+                tty=True,
+                read_only=False,
+                detach=True,
+                volumes=self.volumes,
+                working_dir=workdir,
+                entrypoint=entrypoint,
+            )
             try:
                 container.start()
 
-                return Execution(self, container)  # this calls self.__exit__(...) when it is complete
-            except Exception as e:
+                return Execution(
+                    self, container
+                )  # this calls self.__exit__(...) when it is complete
+            except Exception:
                 try:
                     container.remove(force=True)
-                    logger.debug(f"Waiting for container {container.id} to be removed...")
+                    logger.debug(
+                        f"Waiting for container {container.id} to be removed..."
+                    )
                     container.wait(condition="removed")
                 except NotFound:
                     logger.debug(f"Container {container.id} was already removed")
@@ -160,13 +178,18 @@ class Container:
 
     def start(self):
         if self._image is not None:
-            raise ValueError(f"The container is already started!")
+            raise ValueError("The container is already started!")
         if isinstance(self.parent, Container):
             _ = self.parent.__enter__()
 
         container = self.client.containers.run(
-            image=self.parent_image, entrypoint="/bin/bash", detach=True, remove=True, tty=True, read_only=False,
-            volumes=self.volumes
+            image=self.parent_image,
+            entrypoint="/bin/bash",
+            detach=True,
+            remove=True,
+            tty=True,
+            read_only=False,
+            volumes=self.volumes,
         )
         try:
             self.setup_image(container)
@@ -192,7 +215,7 @@ class Container:
         if isinstance(self.parent, Container):
             self.parent.__exit__(None, None, None)
 
-    def __enter__(self: C) -> C:
+    def __enter__(self) -> Self:
         self._entries += 1
         if self._entries == 1:
             try:
@@ -215,8 +238,13 @@ class ContainerProgress(Progress):
     _exec_title: Optional[str] = None
     _exec_subtitle: Optional[str] = None
 
-    def execute(self, execution: Execution, title: Optional[str] = None, subtitle: Optional[str] = None,
-                scrollback: int = 10):
+    def execute(
+        self,
+        execution: Execution,
+        title: Optional[str] = None,
+        subtitle: Optional[str] = None,
+        scrollback: int = 10,
+    ):
         if self._execution is not None and not self._execution.done:
             raise ValueError("An execution is already assigned to this progress!")
         self._execution = execution
@@ -231,11 +259,17 @@ class ContainerProgress(Progress):
                 self._execution = None
             else:
                 lines: List[str] = []
-                for line in self._execution.logs(scrollback=self._scrollback).split(b"\n"):
+                for line in self._execution.logs(scrollback=self._scrollback).split(
+                    b"\n"
+                ):
                     try:
                         lines.append(line.decode("utf-8"))
                     except UnicodeDecodeError:
                         lines.append(repr(line)[2:-1])
                 while lines and not lines[-1].strip():
                     lines.pop()
-                yield Panel("\n".join(lines), title=self._exec_title, subtitle=self._exec_subtitle)
+                yield Panel(
+                    "\n".join(lines),
+                    title=self._exec_title,
+                    subtitle=self._exec_subtitle,
+                )
