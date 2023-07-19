@@ -32,7 +32,11 @@ Home = "https://github.com/trailofbits/apt-trace"
 
 [project.optional-dependencies]
 dev = [
-    "flake8",
+    "ruff",
+    "black",
+    "mypy",
     "twine",
-    "mypy"
 ]
+
+[tool.mypy]
+ignore_missing_imports = true
