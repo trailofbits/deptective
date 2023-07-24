@@ -1,6 +1,3 @@
-import logging
-import sys
-
 from .cli import main
 
 

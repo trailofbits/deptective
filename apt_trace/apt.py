@@ -1,17 +1,25 @@
+from __future__ import annotations
+
 from abc import abstractmethod
 import functools
 import gzip
 import logging
 from pathlib import Path
-import pickle
 import re
 import sqlite3
-from typing import Dict, FrozenSet, Iterable, Iterator, Optional, Set, Union, Tuple, Type, TypeVar
-
+from typing import (
+    Dict,
+    FrozenSet,
+    Iterable,
+    Iterator,
+    Set,
+    Union,
+    Tuple,
+    Type,
+)
 from appdirs import AppDirs
-import rich.progress
-
-from .logs import DownloadWithProgress, get_console, iterative_readlines
+from .logs import DownloadWithProgress, iterative_readlines
+from dataclasses import dataclass
 
 
 logger = logging.getLogger(__name__)
@@ -23,23 +31,50 @@ if not CACHE_DIR.exists():
     CACHE_DIR.mkdir(parents=True)
 
 
-C = TypeVar("C")
+@dataclass(eq=True, frozen=True)
+class AptCacheConfig:
+    os = "ubuntu"
+    os_version: str
+    arch: str
+
+    def download(self) -> Iterator[Tuple[str, FrozenSet[str]]]:
+        """
+        Downloads the APT file database and presents it as an iterator.
+        """
+        contents_url = (
+            "http://security.ubuntu.com/ubuntu/dists/"
+            f"{self.os_version}/Contents-{self.arch}.gz"
+        )
+        logger.info(
+            f"Downloading {contents_url}\n"
+            "This is a one-time download and may take a few minutes."
+        )
+        contents_pattern = re.compile(r"(\S+)\s+(\S.*)")
+        with DownloadWithProgress(contents_url) as p, gzip.open(p, "rb") as gz:
+            for line in iterative_readlines(gz):  # type: ignore
+                m = contents_pattern.match(line.decode("utf-8"))
+                if not m:
+                    raise ValueError(f"Unexpected line: {line!r}")
+                filename = m.group(1)
+                packages = frozenset(
+                    pkg.split("/")[-1].strip() for pkg in m.group(2).split(",")
+                )
+                yield filename, packages
 
 
 class AptCache:
-    LOADED: Dict[Tuple[str, str], "AptCache"] = {}
-    VERSIONS: Dict[int, Type["AptCache"]] = {}
+    LOADED: Dict[AptCacheConfig, AptCache] = {}
+    VERSIONS: Dict[int, Type[AptCache]] = {}
 
-    def __init__(self, arch: str = "amd64", ubuntu_version: str = "kinetic"):
-        self.arch: str = arch
-        self.ubuntu_version: str = ubuntu_version
+    def __init__(self, config: AptCacheConfig):
+        self.config = config
 
     def __contains__(self, filename: Union[str, bytes, Path]):
         return bool(self[filename])
 
     @abstractmethod
-    def __iter__(self) -> Iterator[Tuple[str, Set[str]]]:
-        raise NotImplementedError()
+    def __iter__(self) -> Iterator[Tuple[str, FrozenSet[str]]]:
+        raise NotImplementedError
 
     def __getitem__(self, filename: Union[str, bytes, Path]) -> FrozenSet[str]:
         if isinstance(filename, Path):
@@ -47,58 +82,49 @@ class AptCache:
         elif isinstance(filename, bytes):
             filename = filename.decode("utf-8")
         if filename.startswith("/"):
-            filename = filename[1:]  # the contents paths do not start with a leading slash
+            filename = filename[
+                1:
+            ]  # the contents paths do not start with a leading slash
         return self.packages_providing(filename)
-
-    @abstractmethod
-    def exists(self) -> bool:
-        raise NotImplementedError()
-
-    @abstractmethod
-    def packages_providing(self, filename: str) -> FrozenSet[str]:
-        raise NotImplementedError()
-
-    def __init_subclass__(cls, **kwargs):
-        version = cls.get_version()
-        if version in AptCache.VERSIONS:
-            raise TypeError(f"{cls.__name__} is version {version}, but that version is already associated with "
-                            f"{AptCache.VERSIONS[version].__name__}")
-        AptCache.VERSIONS[version] = cls
-        return super().__init_subclass__(**kwargs)
-
-    def download(self) -> Iterator[Tuple[str, FrozenSet[str]]]:
-        contents_url = f"http://security.ubuntu.com/ubuntu/dists/" \
-                       f"{self.ubuntu_version}/Contents-{self.arch}.gz"
-        logger.info(f"Downloading {contents_url}\nThis is a one-time download and may take a few minutes.")
-        contents_pattern = re.compile(r"(\S+)\s+(\S.*)")
-        with DownloadWithProgress(contents_url) as p, gzip.open(p, "rb") as gz:  # type: ignore
-            for line in iterative_readlines(gz):  # type: ignore
-                m = contents_pattern.match(line.decode("utf-8"))
-                if not m:
-                    raise ValueError(f"Unexpected line: {line!r}")
-                filename = m.group(1)
-                packages = frozenset(pkg.split("/")[-1].strip() for pkg in m.group(2).split(","))
-                yield filename, packages
-
-    @abstractmethod
-    def save(self):
-        raise NotImplementedError()
-
-    def preload(self):
-        pass
 
     @classmethod
     @abstractmethod
-    def get_version(cls) -> int:
-        raise NotImplementedError()
+    def exists(cls, config: AptCacheConfig) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def packages_providing(self, filename: str) -> FrozenSet[str]:
+        raise NotImplementedError
+
+    def __init_subclass__(cls, **kwargs):
+        version = cls.version()
+        if version in AptCache.VERSIONS:
+            raise TypeError(
+                f"{cls.__name__} is version {version}, but that version is already"
+                f" associated with {AptCache.VERSIONS[version].__name__}"
+            )
+        AptCache.VERSIONS[version] = cls
+        return super().__init_subclass__(**kwargs)
+
+    @abstractmethod
+    def save(self):
+        """
+        Persists the native cache format to disk.
+        """
+        raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
+    def version(cls) -> int:
+        raise NotImplementedError
 
     @classmethod
     def latest_version(cls) -> int:
         return max(AptCache.VERSIONS.keys())
 
     @classmethod
-    def next_newest_version(cls) -> Optional[Type["AptCache"]]:
-        our_version = cls.get_version()
+    def next_version(cls) -> Type[AptCache] | None:
+        our_version = cls.version()
         later_versions = {v for v in AptCache.VERSIONS.keys() if v > our_version}
         if later_versions:
             return AptCache.VERSIONS[min(later_versions)]
@@ -107,216 +133,164 @@ class AptCache:
 
     @classmethod
     @abstractmethod
-    def load(cls: Type[C], arch:str, ubuntu_version:str, packages: Iterable[Tuple[str, Iterable[str]]]) -> C:
-        raise NotImplementedError()
+    def from_disk(
+        cls,
+        config: AptCacheConfig,
+    ) -> AptCache:
+        raise NotImplementedError
 
-    def upgrade_to_latest(self) -> "AptCache":
+    @classmethod
+    @abstractmethod
+    def from_iterable(
+        cls,
+        config: AptCacheConfig,
+        packages: Iterable[Tuple[str, Iterable[str]]],
+    ) -> AptCache:
+        """
+        Imports the iterable `packages` into the native cache format, returning a new
+        cache object.
+        """
+        raise NotImplementedError
+
+    def upgrade(self) -> AptCache:
+        """
+        Upgrades the current native cache to the newest format, returning a new cache.
+        """
         ret = self
         while True:
-            next_newest = ret.next_newest_version()
-            if next_newest is None:
+            newer = ret.next_version()
+            if newer is None:
                 break
-            prev = ret
-            logger.info(f"Upgrading from APT cache version {ret.get_version()} to {next_newest.get_version()}...")
-            ret = next_newest.load(arch=self.arch, ubuntu_version=self.ubuntu_version, packages=prev)
+            current = ret
+            logger.info(
+                f"Upgrading from APT cache version {ret.version()} to"
+                f" {newer.version()}..."
+            )
+            ret = newer.from_iterable(
+                config=self.config,
+                packages=current,
+            )
             ret.save()
-            prev.delete()
+            current.delete()
             logger.info("[bold green]Upgraded!", extra={"markup": True})
         return ret
 
     @classmethod
-    def get(cls, arch: str = "amd64", ubuntu_version: str = "kinetic") -> "AptCache":
-        if (arch, ubuntu_version) not in cls.LOADED:
-            all_versions: Dict[int, AptCache] = {
-                v: c(arch, ubuntu_version)
-                for v, c in AptCache.VERSIONS.items()
-            }
-            existing_versions: Dict[int, AptCache] = {
-                v: c
-                for v, c in all_versions.items()
-                if c.exists()
-            }
-            if not existing_versions:
-                cls.LOADED[(arch, ubuntu_version)] = AptCache.VERSIONS[cls.latest_version()](arch, ubuntu_version)
-            else:
-                latest_existing_version = max(existing_versions.keys())
-                cls.LOADED[(arch, ubuntu_version)] = existing_versions[latest_existing_version].upgrade_to_latest()
-        return cls.LOADED[(arch, ubuntu_version)]
+    def get(cls, config: AptCacheConfig) -> AptCache:
+        if config in cls.LOADED:
+            return cls.LOADED[config]
+
+        # Map out the versions with cache files on disk
+        existing_versions: Dict[int, Type[AptCache]] = {
+            v: c for v, c in AptCache.VERSIONS.items() if c.exists(config)
+        }
+
+        # No caches on disk: we need to download and persist
+        if not existing_versions:
+            target = AptCache.VERSIONS[cls.latest_version()]
+            cls.LOADED[config] = target.from_iterable(config, config.download())
+        else:
+            latest_version = max(existing_versions.keys())
+            cls.LOADED[config] = (
+                existing_versions[latest_version].from_disk(config).upgrade()
+            )
+
+        return cls.LOADED[config]
 
     @abstractmethod
     def delete(self):
-        raise NotImplementedError()
-
-
-class AptCacheV1(AptCache):
-    def __init__(self, arch: str = "amd64", ubuntu_version: str = "kinetic"):
-        super().__init__(arch=arch, ubuntu_version=ubuntu_version)
-        self._contents_db: Optional[Dict[bytes, FrozenSet[str]]] = None
-        self._contents_db_cache: Path = CACHE_DIR / f"{ubuntu_version}_{arch}_contents.pkl"
-
-    def __iter__(self) -> Iterator[Tuple[str, FrozenSet[str]]]:
-        self.preload()
-        yield from ((f.decode("utf-8"), s) for f, s in self._contents_db.items())
-
-    @classmethod
-    def get_version(cls) -> int:
-        return 1
-
-    @classmethod
-    def load(
-            cls: Type["AptCacheV1"], arch: str, ubuntu_version: str, packages: Iterable[Tuple[str, Iterable[str]]]
-    ) -> "AptCacheV1":
-        ret = cls(arch=arch, ubuntu_version=ubuntu_version)
-        ret._contents_db = {
-            f.encode("utf-8"): frozenset(p)
-            for f, p in packages
-        }
-        return ret
-
-    def exists(self) -> bool:
-        return self._contents_db is not None or self._contents_db_cache.exists()
-
-    def delete(self):
-        if self._contents_db_cache.exists():
-            self._contents_db_cache.unlink()
-        self._contents_db = None
-
-    def save(self):
-        if self._contents_db is None:
-            self.preload()
-        with open(self._contents_db_cache, 'wb') as contents_db_fd:
-            pickle.dump(self._contents_db, contents_db_fd)
-
-    def preload(self):
-        if self._contents_db is not None:
-            return
-        elif not self.exists():
-            existing_load: Optional[AptCache] = None
-            self._contents_db = self.load(
-                arch=self.arch, ubuntu_version=self.ubuntu_version, packages=self.download()
-            )._contents_db
-            self.save()
-        else:
-            key = (self.arch, self.ubuntu_version)
-            if key in self.LOADED:
-                existing_load = self.LOADED[key]
-                if isinstance(existing_load, AptCacheV1) and existing_load._contents_db is not None:
-                    self._contents_db = existing_load._contents_db
-                    return
-                if existing_load is self:
-                    existing_load = None
-            else:
-                existing_load = None
-            assert self._contents_db_cache.exists()
-            logger.info(f"Loading cached APT sources for Ubuntu {self.ubuntu_version} {self.arch}")
-            with rich.progress.open(
-                    self._contents_db_cache, 'rb', transient=True, console=get_console(logger)
-            ) as f:
-                self._contents_db = pickle.load(f)
-        if isinstance(existing_load, AptCacheV1):
-            assert existing_load._contents_db is None
-            existing_load._contents_db = self._contents_db
-
-    def packages_providing(self, filename: str) -> FrozenSet[str]:
-        self.preload()
-        f = filename.encode("utf-8")
-        if f in self._contents_db:
-            return self._contents_db[f]
-        else:
-            return frozenset()
+        raise NotImplementedError
 
 
 class AptCacheV2(AptCache):
-    def __init__(self, arch: str = "amd64", ubuntu_version: str = "kinetic"):
-        super().__init__(arch=arch, ubuntu_version=ubuntu_version)
-        self._contents_db: Optional[Dict[bytes, FrozenSet[str]]] = None
-        self._contents_db_path: Path = CACHE_DIR / f"{ubuntu_version}_{arch}_contents.sqlite3"
-        self.conn: Optional[sqlite3.Connection] = None
+    def __init__(self, config: AptCacheConfig, *, conn: sqlite3.Connection):
+        super().__init__(config)
+        self._contents_db_path: Path = (
+            CACHE_DIR / f"{config.os_version}_{config.arch}_contents.sqlite3"
+        )
+        self.conn = conn
 
     def __iter__(self) -> Iterator[Tuple[str, FrozenSet[str]]]:
-        self.preload()
         cur = self.conn.cursor()
         res = cur.execute("SELECT filename, package FROM files GROUP BY filename")
-        filename: Optional[str] = None
+        filename: str | None = None
         packages: Set[str] = set()
-        while True:
-            results = res.fetchmany(1024)
-            if not results:
-                break
+        while results := res.fetchmany(1024):
             for f, package in results:
                 if filename is None:
                     filename = f
-                if filename == f:
+                elif filename == f:
                     packages.add(package)
                 else:
-                    if len(packages) > 1:
-                        breakpoint()
                     yield filename, frozenset(packages)
                     filename = None
                     packages = set()
+
         if filename is not None:
             yield filename, frozenset(packages)
 
-    def exists(self) -> bool:
-        return self._contents_db_path.exists()
+    @classmethod
+    def path(cls, config: AptCacheConfig) -> Path:
+        return CACHE_DIR / f"{config.os_version}_{config.arch}_contents.sqlite3"
+
+    @classmethod
+    def exists(cls, config: AptCacheConfig) -> bool:
+        return cls.path(config).exists()
 
     def packages_providing(self, filename: str) -> FrozenSet[str]:
-        self.preload()
         cur = self.conn.cursor()
         res = cur.execute("SELECT package FROM files WHERE filename = ?", (filename,))
         return frozenset(c[0] for c in res.fetchall())
 
     @classmethod
-    def get_version(cls) -> int:
+    def version(cls) -> int:
         return 2
-
-    def preload(self):
-        if self.conn is not None:
-            return
-        elif not self.exists():
-            assert self.conn is None
-            loaded = self.load(arch=self.arch, ubuntu_version=self.ubuntu_version, packages=self.download(),
-                               in_memory=False)
-            loaded.conn.close()
-            assert self.exists()
-        self.conn = sqlite3.connect(str(self._contents_db_path))
 
     def _create_tables(self):
         assert self.conn is not None
         cur = self.conn.cursor()
-        cur.execute("""CREATE TABLE files(
+        cur.execute(
+            """CREATE TABLE files(
             filename TEXT NOT NULL,
             package TEXT NOT NULL
-        )""")
+        )"""
+        )
         cur.execute("CREATE INDEX filenames ON files(filename)")
         cur.execute("CREATE INDEX packages ON files(package)")
         self.conn.commit()
 
     def save(self):
         if not self._contents_db_path.exists():
-            self.load(arch=self.arch, ubuntu_version=self.ubuntu_version, packages=self, in_memory=False).conn.close()
+            self.conn.commit()
         assert self._contents_db_path.exists()
 
     @classmethod
-    def load(
-            cls: Type["AptCacheV2"], arch: str, ubuntu_version: str, packages: Iterable[Tuple[str, Iterable[str]]],
-            in_memory: bool = True
-    ) -> "AptCacheV2":
-        ret = cls(arch=arch, ubuntu_version=ubuntu_version)
-        if in_memory:
-            ret.conn = sqlite3.connect(":memory:")
-        else:
-            ret.conn = sqlite3.connect(str(ret._contents_db_path))
+    def from_disk(
+        cls,
+        config: AptCacheConfig,
+    ) -> AptCacheV2:
+        db_path = str(cls.path(config))
+        return cls(config, conn=sqlite3.connect(db_path))
+
+    @classmethod
+    def from_iterable(
+        cls,
+        config: AptCacheConfig,
+        packages: Iterable[Tuple[str, Iterable[str]]],
+    ) -> AptCacheV2:
+        ret = cls.from_disk(config)
+
         try:
             ret._create_tables()
             with ret.conn:
                 for filename, pkgs in packages:
-                    ret.conn.executemany("INSERT INTO files(filename, package) VALUES(?, ?)", [
-                        (filename, package) for package in pkgs
-                    ])
+                    ret.conn.executemany(
+                        "INSERT INTO files(filename, package) VALUES(?, ?)",
+                        [(filename, package) for package in pkgs],
+                    )
             return ret
         except:
-            if not in_memory and ret._contents_db_path.exists():
+            if ret._contents_db_path.exists():
                 ret._contents_db_path.unlink()
             raise
 
@@ -326,10 +300,16 @@ class AptCacheV2(AptCache):
 
 @functools.lru_cache(maxsize=128)
 def file_to_packages(
-        filename: Union[str, bytes, Path], arch: str = "amd64", ubuntu_version: str = "kinetic"
+    filename: Union[str, bytes, Path],
+    arch: str = "amd64",
+    os_version: str = "kinetic",
 ) -> FrozenSet[str]:
     logger.debug(f"searching for packages associated with {filename!r}")
-    cache = AptCache.get(arch, ubuntu_version)
+    cache = AptCache.get(AptCacheConfig(os_version, arch))
     result = cache[filename]
     logger.debug(f"File {filename!r} is associated with packages {result!r}")
     return result
+
+
+def prime_caches():
+    AptCache.get(AptCacheConfig("kinetic", "amd64"))

@@ -1,3 +1,4 @@
+import io
 from logging import Handler, Logger, getLogger
 from pathlib import Path
 from typing import BinaryIO, Iterator, Optional
@@ -7,7 +8,13 @@ import urllib.request
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.progress import (
-    BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn, TaskID
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    TextColumn,
+    TimeRemainingColumn,
+    TransferSpeedColumn,
+    TaskID,
 )
 
 
@@ -21,19 +28,23 @@ def handlers(logger: Logger) -> Iterator[Handler]:
         log = log.parent
 
 
-def get_console(logger: Logger) -> Optional[Console]:
+def get_console(logger: Logger) -> Console:
     for handler in handlers(logger):
         if isinstance(handler, RichHandler):
             return handler.console
-    return None
+    raise ValueError
 
 
-class Download:
+class Download(io.RawIOBase):
     def __init__(self, progress: "DownloadWithProgress"):
         self._progress: DownloadWithProgress = progress
-        self._task_id: TaskID = progress.progress.add_task("download", filename=progress.filename, start=False)
+        self._task_id: TaskID = progress.progress.add_task(
+            "download", filename=progress.filename, start=False
+        )
         self._response = urllib.request.urlopen(progress.url)
-        self._progress.progress.update(self._task_id, total=int(self._response.info()["Content-length"]))
+        self._progress.progress.update(
+            self._task_id, total=int(self._response.info()["Content-length"])
+        )
         self._progress.progress.start_task(self._task_id)
 
     def __getattr__(self, item):
@@ -41,20 +52,22 @@ class Download:
             return getattr(self._response, item)
         except AttributeError:
             pass
-        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{item!s}'")
+        raise AttributeError(
+            f"'{self.__class__.__name__}' object has no attribute '{item!s}'"
+        )
 
-    def read(self, __size: int = ...) -> bytes | None:
-        ret = self._response.read(__size)
+    def read(self, size: int = -1, /) -> bytes | None:
+        ret = self._response.read(size)
         self._progress.progress.update(self._task_id, advance=len(ret))
         return ret
 
 
 class DownloadWithProgress:
     def __init__(
-            self,
-            url: str,
-            console: Optional[Console] = None,
-            progress: Optional[Progress] = None
+        self,
+        url: str,
+        console: Optional[Console] = None,
+        progress: Optional[Progress] = None,
     ):
         self.url: str = url
         if console is None:
@@ -75,7 +88,7 @@ class DownloadWithProgress:
                 TransferSpeedColumn(),
                 "•",
                 TimeRemainingColumn(),
-                console=console
+                console=console,
             )
         else:
             self._enter_progress = False
@@ -84,12 +97,12 @@ class DownloadWithProgress:
 
     def __enter__(self) -> Download:
         if self._enter_progress:
-            self.progress.__enter__()
+            self.progress.start()
         return Download(self)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self._enter_progress:
-            self.progress.__exit__(exc_type, exc_val, exc_tb)
+            self.progress.stop()
         self.progress.console.log(f"Downloaded {self.filename}")
 
 

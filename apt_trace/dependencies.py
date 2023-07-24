@@ -3,7 +3,17 @@ from logging import getLogger
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
-from typing import Dict, FrozenSet, Iterable, Iterator, List, Optional, Set, Tuple, Union
+from typing import (
+    Dict,
+    FrozenSet,
+    Iterable,
+    Iterator,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Union,
+)
 
 import docker
 from docker.models.images import Image
@@ -11,7 +21,7 @@ import randomname
 from rich.console import Console
 from rich.progress import Progress, MofNCompleteColumn, TaskID
 
-from .apt import AptCache, file_to_packages
+from .apt import file_to_packages, prime_caches
 from .containers import Container, ContainerProgress, DockerContainer
 
 
@@ -70,12 +80,15 @@ class NonZeroExit(SBOMGenerationError):
 
 
 class PackageResolutionError(SBOMGenerationError):
-    def __init__(self, message: str, command_output: Optional[bytes] = None):
+    def __init__(self, message: str, command_output: bytes | None = None):
         super().__init__(message)
-        self.command_output: Optional[bytes] = command_output
+        self.command_output: bytes | None = command_output
 
     @property
-    def command_output_str(self) -> Optional[str]:
+    def command_output_str(self) -> str | None:
+        if not self.command_output:
+            return None
+
         try:
             return self.command_output.decode("utf-8")
         except UnicodeDecodeError:
@@ -118,20 +131,26 @@ class SBOMGenerator:
 
     @property
     def apt_strace_image(self) -> Image:
-        client = docker.from_env()
-        for image in client.images.list(name="trailofbits/apt-strace"):
+        for image in self.client.images.list(name="trailofbits/apt-strace"):
             history = image.history()
             if history:
                 creation_time = max(c["Created"] for c in image.history())
                 dockerfile = APT_STRACE_DIR / "Dockerfile"
                 source = APT_STRACE_DIR / "apt-strace.c"
-                min_creation_time = max(dockerfile.stat().st_mtime, source.stat().st_mtime)
+                min_creation_time = max(
+                    dockerfile.stat().st_mtime, source.stat().st_mtime
+                )
                 if creation_time < min_creation_time:
                     # it needs to be rebuilt!
                     break
             return image
         # we need to build the image!
-        return client.images.build(path=str(APT_STRACE_DIR), tag="trailofbits/apt-strace", rm=True, pull=True)[0]
+        return self.client.images.build(
+            path=str(APT_STRACE_DIR),
+            tag="trailofbits/apt-strace",
+            rm=True,
+            pull=True,
+        )[0]
 
     def main(self, command: str) -> Iterator[SBOM]:
         with SBOMGeneratorStep(self, command) as step:
@@ -142,11 +161,11 @@ class SBOMGenerator:
 
 class SBOMGeneratorStep(Container):
     def __init__(
-            self,
-            generator: SBOMGenerator,
-            command: str,
-            preinstall: Iterable[str] = (),
-            parent: Optional["SBOMGeneratorStep"] = None
+        self,
+        generator: SBOMGenerator,
+        command: str,
+        preinstall: Iterable[str] = (),
+        parent: Optional["SBOMGeneratorStep"] = None,
     ):
         if parent is None:
             p: Union[Image, SBOMGeneratorStep] = generator.apt_strace_image
@@ -165,8 +184,13 @@ class SBOMGeneratorStep(Container):
         else:
             self.level = 0
             self.tried_packages = set()
-            self._progress = ContainerProgress(*Progress.get_default_columns(), MofNCompleteColumn(),
-                                               console=generator.console, transient=True, expand=True)
+            self._progress = ContainerProgress(
+                *Progress.get_default_columns(),
+                MofNCompleteColumn(),
+                console=generator.console,
+                transient=True,
+                expand=True,
+            )
         self.command_output: Optional[bytes] = None
         self.missing_files: List[str] = []
         self._task: Optional[TaskID] = None
@@ -191,18 +215,33 @@ class SBOMGeneratorStep(Container):
     def _register_infeasible(self):
         sbom = self.sbom
         if sbom:
-            logger.info(f"Infeasible dependency sequence: {sbom.rich_str}", extra={"markup": True})
+            logger.info(
+                f"Infeasible dependency sequence: {sbom.rich_str}",
+                extra={"markup": True},
+            )
             self.generator.infeasible.add(sbom)
-        raise PackageResolutionError(f"`{self.command}` exited with code {self.retval} having looked for "
-                                     f"missing files {list(self.missing_files_without_duplicates)!r}, none of which "
-                                     f"are satisfied by Ubuntu packages", command_output=self.command_output)
+        raise PackageResolutionError(
+            f"`{self.command}` exited with code {self.retval} having looked for missing"
+            f" files {list(self.missing_files_without_duplicates)!r}, none of which are"
+            " satisfied by Ubuntu packages",
+            command_output=self.command_output,
+        )
 
     def find_feasible_sboms(self) -> Iterator[SBOM]:
         logger.debug(f"Running step {self.level}...")
         try:
             logger.debug(f"apt-strace /log/apt-trace.txt {self.command}")
-            exe = self.run(["/log/apt-trace.txt", self.command], entrypoint="/usr/bin/apt-strace", workdir="/workdir")
-            self._progress.execute(exe, title=self.command, subtitle=self.sbom.rich_str, scrollback=5)
+            exe = self.run(
+                ["/log/apt-trace.txt", self.command],
+                entrypoint="/usr/bin/apt-strace",
+                workdir="/workdir",
+            )
+            self._progress.execute(
+                exe,
+                title=self.command,
+                subtitle=self.sbom.rich_str,
+                scrollback=5,
+            )
             while not exe.done:
                 self._progress.refresh()
                 time.sleep(0.5)
@@ -213,25 +252,40 @@ class SBOMGeneratorStep(Container):
         with open(self._logdir / "apt-trace.txt") as log:
             for line in log:
                 if line.startswith("missing\t"):
-                    self.missing_files.append(line[len("missing\t"):].strip())
+                    self.missing_files.append(line[len("missing\t") :].strip())
         logger.debug(self.missing_files)
         if self.retval == 0:
             yield SBOM()
             return
         elif not self.missing_files:
-            raise NonZeroExit(f"`{self.command}` exited with code {self.retval} without accessing any files")
-        elif isinstance(self.parent, SBOMGeneratorStep) and self.parent.command_output == self.command_output and \
-                self.parent.retval == self.retval:
+            raise NonZeroExit(
+                f"`{self.command}` exited with code {self.retval} without accessing any"
+                " files"
+            )
+        elif (
+            isinstance(self.parent, SBOMGeneratorStep)
+            and self.parent.command_output == self.command_output
+            and self.parent.retval == self.retval
+        ):
             # installing `package` produced the exact same result as before
-            logger.info(f"Installing {', '.join(self.preinstall)} at this point is useless because `{self.command}` "
-                        f"has the same output with or without it")
-            raise IrrelevantPackageInstall(f"`{self.command}` exited with code {self.retval} regardless of the install "
-                                           f"of package(s) {', '.join(self.preinstall)}")
+            logger.info(
+                f"Installing {', '.join(self.preinstall)} at this point is useless"
+                f" because `{self.command}` has the same output with or without it"
+            )
+            raise IrrelevantPackageInstall(
+                f"`{self.command}` exited with code {self.retval} regardless of the"
+                f" install of package(s) {', '.join(self.preinstall)}"
+            )
         packages_to_try: List[str] = []
         history: Set[str] = set()
         for file in reversed(self.missing_files):
             # reverse the missing files so we try the last missing files first
-            new_packages = set(file_to_packages(file)) - self.tried_packages - self.preinstall - history
+            new_packages = (
+                set(file_to_packages(file))
+                - self.tried_packages
+                - self.preinstall
+                - history
+            )
             packages_to_try.extend(new_packages)
             history |= new_packages
         if not packages_to_try:
@@ -241,15 +295,26 @@ class SBOMGeneratorStep(Container):
         self._progress.update(self._task, total=len(packages_to_try))
         for package in sorted(packages_to_try):
             try:
-                step = SBOMGeneratorStep(self.generator, self.command, preinstall=(package,), parent=self)
+                step = SBOMGeneratorStep(
+                    self.generator,
+                    self.command,
+                    preinstall=(package,),
+                    parent=self,
+                )
                 if step.sbom in self.generator.infeasible:
                     # we already know that this substep's SBOM is infeasible
-                    logger.debug(f"Skipping substep {package} because we already know that it is infeasible")
+                    logger.debug(
+                        f"Skipping substep {package} because we already know that it is"
+                        " infeasible"
+                    )
                     continue
                 elif any(step.sbom.issuperset(f) for f in self.generator.feasible):
-                    # this next step would produce a superset of an already known-good result, so skip it
-                    logger.debug(f"Skipping substep {package} because it is a superset of an already discovered "
-                                 f"feasible solution")
+                    # this next step would produce a superset of an already known-good
+                    # result, so skip it
+                    logger.debug(
+                        f"Skipping substep {package} because it is a superset of an"
+                        " already discovered feasible solution"
+                    )
                     continue
                 with step as substep:
                     try:
@@ -260,7 +325,10 @@ class SBOMGeneratorStep(Container):
                         last_error = last_error
             except PreinstallError:
                 # package was unable to be installed, so skip it
-                logger.warning(f"[red]:warning: Unable to preinstall package {package}", extra={"markup": True})
+                logger.warning(
+                    f"[red]:warning: Unable to preinstall package {package}",
+                    extra={"markup": True},
+                )
                 continue
             finally:
                 self._progress.update(self._task, advance=1)
@@ -275,28 +343,33 @@ class SBOMGeneratorStep(Container):
         cwd = Path.cwd().absolute()
         return {
             str(cwd): {"bind": "/src", "mode": "ro"},
-            str(self._logdir): {"bind": "/log", "mode": "rw"}
+            str(self._logdir): {"bind": "/log", "mode": "rw"},
         }
 
     def setup_image(self, container: DockerContainer):
         if self.level == 0:
             logger.info("Copying source files to the container...")
-            retval, output = container.exec_run(
-                "cp -r /src /workdir"
-            )
+            retval, output = container.exec_run("cp -r /src /workdir")
             if retval != 0:
-                raise ValueError(f"Error copying the source files to /workdir in the Docker image: {output}")
+                raise ValueError(
+                    "Error copying the source files to /workdir in the Docker image:"
+                    f" {output}"
+                )
             logger.info("Updating APT sources...")
-            retval, output = container.exec_run(
-                "apt-get update -y"
-            )
+            retval, output = container.exec_run("apt-get update -y")
             if retval != 0:
                 raise ValueError(f"Error running `apt-get update`: {output}")
         if self.preinstall:
-            logger.info(f"Installing {', '.join(self.preinstall)} into {container.short_id}...")
-            retval, output = container.exec_run(f"apt-get -y install {' '.join(self.preinstall)}")
+            logger.info(
+                f"Installing {', '.join(self.preinstall)} into {container.short_id}..."
+            )
+            retval, output = container.exec_run(
+                f"apt-get -y install {' '.join(self.preinstall)}"
+            )
             if retval != 0:
-                raise PreinstallError(f"Error apt-get installing {' '.join(self.preinstall)}: {output}")
+                raise PreinstallError(
+                    f"Error apt-get installing {' '.join(self.preinstall)}: {output}"
+                )
 
     def _cleanup(self):
         log_tmpdir = self._log_tmpdir
@@ -310,17 +383,21 @@ class SBOMGeneratorStep(Container):
     def start(self):
         assert self._logdir is None
         if self.level == 0:
-            # make sure that we pre-load the apt cache before starting our task, otherwise `rich` will mess
-            # up its progress bars
-            AptCache.get().preload()
+            # make sure that we pre-load the apt cache before starting our task,
+            # otherwise `rich` will mess up its progress bars
+            # AptCache.get().preload()
+            prime_caches()
             self._progress.__enter__()
         if not self.preinstall:
             task_name = f":magnifying_glass_tilted_right: {self.command}"
         else:
-            task_name = f"[blue]{self.level}[/blue] :floppy_disk: [bold italic]{', '.join(self.preinstall)}"
+            task_name = (
+                f"[blue]{self.level}[/blue] :floppy_disk: [bold"
+                f" italic]{', '.join(self.preinstall)}"
+            )
         self._task = self._progress.add_task(task_name, total=None)
         self._log_tmpdir = TemporaryDirectory()
-        self._logdir = Path(self._log_tmpdir.__enter__()).absolute()
+        self._logdir = Path(self._log_tmpdir.name).absolute()
         try:
             super().start()
         except SBOMGenerationError as e:
