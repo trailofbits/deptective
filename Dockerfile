@@ -1,4 +1,4 @@
-FROM python:3.9
+FROM python:3.11
 
 RUN apt-get update && apt install -y apt-file python3-setuptools && apt-file update && mkdir /apt_trace
 
