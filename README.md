@@ -42,6 +42,6 @@ $ apt update
 $ git clone https://github.com/trailofbits/apt-trace
 $ cd apt-trace
 $ python3 -m venv venv  # Optional virtualenv
-$ ./venv/bin/activate   # Optional virtualenv
+$ . venv/bin/activate   # Optional virtualenv
 $ python setup.py develop
 ```
