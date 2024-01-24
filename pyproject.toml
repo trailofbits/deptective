@@ -31,12 +31,12 @@ apt-trace = "apt_trace.__main__:main"
 Home = "https://github.com/trailofbits/apt-trace"
 
 [project.optional-dependencies]
-dev = [
+lint = [
     "ruff",
     "black",
     "mypy",
-    "twine",
 ]
+dev = ["apt_trace[lint]", "twine"]
 
 [tool.mypy]
 ignore_missing_imports = true
