@@ -95,7 +95,7 @@ def main() -> int:
 
     try:
         for i, sbom in enumerate(
-            SBOMGenerator(console=console).main(" ".join(args.command))
+            SBOMGenerator(console=console).main(args.command[0], *args.command[1:])
         ):
             if not old_stdout.isatty():
                 old_stdout.write(str(sbom))

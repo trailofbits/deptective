@@ -152,8 +152,8 @@ class SBOMGenerator:
             pull=True,
         )[0]
 
-    def main(self, command: str) -> Iterator[SBOM]:
-        with SBOMGeneratorStep(self, command) as step:
+    def main(self, command: str, *args: str) -> Iterator[SBOM]:
+        with SBOMGeneratorStep(self, command, args) as step:
             for sbom in step.find_feasible_sboms():
                 self.feasible.add(sbom)
                 yield sbom
@@ -164,6 +164,7 @@ class SBOMGeneratorStep(Container):
         self,
         generator: SBOMGenerator,
         command: str,
+        arguments: Iterable[str],
         preinstall: Iterable[str] = (),
         parent: Optional["SBOMGeneratorStep"] = None,
     ):
@@ -175,6 +176,7 @@ class SBOMGeneratorStep(Container):
         self._log_tmpdir: Optional[TemporaryDirectory] = None
         self._logdir: Optional[Path] = None
         self.command: str = command
+        self.args: Tuple[str, ...] = tuple(arguments)
         self.preinstall: Set[str] = set(preinstall)
         self.generator: SBOMGenerator = generator
         self.retval: int = -1
@@ -194,6 +196,13 @@ class SBOMGeneratorStep(Container):
         self.command_output: Optional[bytes] = None
         self.missing_files: List[str] = []
         self._task: Optional[TaskID] = None
+
+    @property
+    def full_command(self) -> str:
+        if self.args:
+            return f"{self.command} {' '.join(self.args)}"
+        else:
+            return self.command
 
     @property
     def missing_files_without_duplicates(self) -> Iterator[str]:
@@ -221,7 +230,7 @@ class SBOMGeneratorStep(Container):
             )
             self.generator.infeasible.add(sbom)
         raise PackageResolutionError(
-            f"`{self.command}` exited with code {self.retval} having looked for missing"
+            f"`{self.full_command}` exited with code {self.retval} having looked for missing"
             f" files {list(self.missing_files_without_duplicates)!r}, none of which are"
             " satisfied by Ubuntu packages",
             command_output=self.command_output,
@@ -230,15 +239,15 @@ class SBOMGeneratorStep(Container):
     def find_feasible_sboms(self) -> Iterator[SBOM]:
         logger.debug(f"Running step {self.level}...")
         try:
-            logger.debug(f"apt-strace /log/apt-trace.txt {self.command}")
+            logger.debug(f"apt-strace /log/apt-trace.txt {self.full_command}")
             exe = self.run(
-                ["/log/apt-trace.txt", self.command],
+                ["/log/apt-trace.txt", self.command] + list(self.args),
                 entrypoint="/usr/bin/apt-strace",
                 workdir="/workdir",
             )
             self._progress.execute(
                 exe,
-                title=self.command,
+                title=self.full_command,
                 subtitle=self.sbom.rich_str,
                 scrollback=5,
             )
@@ -259,7 +268,7 @@ class SBOMGeneratorStep(Container):
             return
         elif not self.missing_files:
             raise NonZeroExit(
-                f"`{self.command}` exited with code {self.retval} without accessing any"
+                f"`{self.full_command}` exited with code {self.retval} without accessing any"
                 " files"
             )
         elif (
@@ -270,10 +279,10 @@ class SBOMGeneratorStep(Container):
             # installing `package` produced the exact same result as before
             logger.info(
                 f"Installing {', '.join(self.preinstall)} at this point is useless"
-                f" because `{self.command}` has the same output with or without it"
+                f" because `{self.full_command}` has the same output with or without it"
             )
             raise IrrelevantPackageInstall(
-                f"`{self.command}` exited with code {self.retval} regardless of the"
+                f"`{self.full_command}` exited with code {self.retval} regardless of the"
                 f" install of package(s) {', '.join(self.preinstall)}"
             )
         packages_to_try: List[str] = []
@@ -296,8 +305,9 @@ class SBOMGeneratorStep(Container):
         for package in sorted(packages_to_try):
             try:
                 step = SBOMGeneratorStep(
-                    self.generator,
-                    self.command,
+                    generator=self.generator,
+                    command=self.command,
+                    arguments=self.args,
                     preinstall=(package,),
                     parent=self,
                 )
