@@ -116,6 +116,12 @@ def main() -> int:
 
     if args.list:
         list_supported_configurations(console)
+        if not args.command:
+            return 0
+
+    if not args.command:
+        parser.print_help()
+        return 1
 
     results: List[SBOM] = []
 
