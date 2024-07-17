@@ -379,7 +379,7 @@ class AptCacheV2(AptCache):
 def file_to_packages(
     filename: Union[str, bytes, Path],
     arch: str = "amd64",
-    os_version: str = "kinetic",
+    os_version: str = "noble",
 ) -> FrozenSet[str]:
     logger.debug(f"searching for packages associated with {filename!r}")
     cache = AptCache.get(AptCacheConfig(os_version, arch))
@@ -388,5 +388,8 @@ def file_to_packages(
     return result
 
 
+DEFAULT_CONFIG = AptCacheConfig("noble", "amd64")
+
+
 def prime_caches():
-    AptCache.get(AptCacheConfig("kinetic", "amd64"))
+    AptCache.get(DEFAULT_CONFIG)

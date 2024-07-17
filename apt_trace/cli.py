@@ -13,6 +13,7 @@ from rich.table import Table
 
 from textwrap import dedent
 
+from . import apt
 from .apt import AptDatabaseNotFoundError, AptCacheConfig
 from .dependencies import (
     PackageResolutionError,
@@ -49,6 +50,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--list", "-l", action="store_true",
                         help="list available OS versions for package resolution")
+    parser.add_argument("--operating-system", "-os", type=str, default="ubuntu",
+                        help="the operating system in which to resolve packages (default=ubuntu)")
+    parser.add_argument("--release", "-r", type=str, default="noble",
+                        help="the release of the operating system in which to resolve packages (default=noble)")
+    parser.add_argument("--arch", type=str, default="amd64",
+                        help="the architecture in which to resolve packages (default=amd64)")
     results_group = parser.add_mutually_exclusive_group()
     results_group.add_argument(
         "--num-results",
@@ -116,12 +123,20 @@ def main() -> int:
 
     if args.list:
         list_supported_configurations(console)
+        console.print("\n")
+        console.print("Use ")
         if not args.command:
             return 0
 
     if not args.command:
         parser.print_help()
         return 1
+
+    if args.operating_system != "ubuntu":
+        logger.error("The only operating system currently supported is `ubuntu`.")
+        return 1
+
+    apt.DEFAULT_CONFIG = AptCacheConfig(os_version=args.release, arch=args.arch)
 
     results: List[SBOM] = []
 
@@ -153,7 +168,8 @@ def main() -> int:
         logger.error(f"An error occurred while communicating with Docker: {e!s}")
         return 1
     except AptDatabaseNotFoundError as e:
-        logger.error(f"{e!s}\nPlease make sure that this OS version is still maintained.")
+        logger.error(f"{e!s}\nPlease make sure that this OS version is still maintained.\n"
+                     f"Run `apt-trace --list` for a list of available OS versions and architectures.")
     except SBOMGenerationError as e:
         logger.error(str(e))
         if (
