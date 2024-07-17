@@ -3,6 +3,7 @@ import logging
 import sys
 from typing import List
 
+from docker.errors import DockerException
 from rich import traceback
 from rich.console import Console
 from rich.logging import RichHandler
@@ -114,6 +115,9 @@ def main() -> int:
 
             if not args.all and 0 < args.num_results and i == args.num_results - 1:
                 break
+    except DockerException as e:
+        logger.error(f"An error occurred while communicating with Docker: {e!s}")
+        return 1
     except SBOMGenerationError as e:
         logger.error(str(e))
         if (
