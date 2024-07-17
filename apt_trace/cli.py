@@ -1,4 +1,5 @@
 import argparse
+from collections import defaultdict
 import logging
 import sys
 from typing import List
@@ -8,22 +9,46 @@ from rich import traceback
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
+from rich.table import Table
 
 from textwrap import dedent
 
+from .apt import AptDatabaseNotFoundError, AptCacheConfig
 from .dependencies import (
     PackageResolutionError,
-    SBOMGenerationError,
     SBOM,
     SBOMGenerator,
 )
-
+from .exceptions import SBOMGenerationError
 
 logger = logging.getLogger(__name__)
 
 
+def list_supported_configurations(console: Console | None = None):
+    if console is None:
+        console = Console()
+
+    table = Table(title="Supported Package Managers")
+
+    table.add_column("OS", justify="left", style="cyan", no_wrap=True)
+    table.add_column("Release", style="magenta")
+    table.add_column("Architectures", justify="right", style="green")
+
+    rows: dict[tuple[str, str], set[str]] = defaultdict(set)
+
+    for version in AptCacheConfig.versions(console=console):
+        rows[(version.os, version.os_version)].add(version.arch)
+
+    for os, os_version in sorted(rows.keys()):
+        table.add_row(os, os_version, ", ".join(sorted(rows[(os, os_version)])))
+
+    console.print(table)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--list", "-l", action="store_true",
+                        help="list available OS versions for package resolution")
     results_group = parser.add_mutually_exclusive_group()
     results_group.add_argument(
         "--num-results",
@@ -89,6 +114,9 @@ def main() -> int:
 
     traceback.install(show_locals=True)
 
+    if args.list:
+        list_supported_configurations(console)
+
     results: List[SBOM] = []
 
     # rich has a tendency to gobble stdout, so save the old one before proceeding:
@@ -118,6 +146,8 @@ def main() -> int:
     except DockerException as e:
         logger.error(f"An error occurred while communicating with Docker: {e!s}")
         return 1
+    except AptDatabaseNotFoundError as e:
+        logger.error(f"{e!s}\nPlease make sure that this OS version is still maintained.")
     except SBOMGenerationError as e:
         logger.error(str(e))
         if (

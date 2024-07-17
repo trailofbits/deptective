@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from appdirs import AppDirs
+from dataclasses import dataclass
 import functools
 import gzip
+from html.parser import HTMLParser
 import logging
 from pathlib import Path
 import re
@@ -12,14 +15,20 @@ from typing import (
     FrozenSet,
     Iterable,
     Iterator,
+    Optional,
     Set,
     Union,
     Tuple,
     Type,
+    TypeVar,
 )
-from appdirs import AppDirs
+from urllib.error import HTTPError
+from urllib.request import urlopen
+
+from rich.console import Console
+
+from .exceptions import SBOMGenerationError
 from .logs import DownloadWithProgress, iterative_readlines
-from dataclasses import dataclass
 
 
 logger = logging.getLogger(__name__)
@@ -31,11 +40,67 @@ if not CACHE_DIR.exists():
     CACHE_DIR.mkdir(parents=True)
 
 
+T = TypeVar("T")
+
+
+class AptResolutionError(SBOMGenerationError):
+    pass
+
+
+class AptDatabaseNotFoundError(AptResolutionError):
+    pass
+
+
+class UbuntuDistParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.subdirectories: set[str] = set()
+        self.contents: set[str] = set()
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a" and attrs:
+            is_href, url = attrs[0]
+            if is_href == "href" and not url.startswith("/"):
+                if url.endswith("/"):
+                    # this is a link to a subdirectory
+                    self.subdirectories.add(url)
+                elif url.startswith("Contents-") and url.endswith(".gz"):
+                    # this is a contents file
+                    self.contents.add(url)
+
+    def handle_endtag(self, tag):
+        pass
+
+    def handle_data(self, data):
+        pass
+
+
 @dataclass(eq=True, frozen=True)
 class AptCacheConfig:
     os = "ubuntu"
     os_version: str
     arch: str
+
+    @classmethod
+    def versions(cls: Type[T], console: Optional[Console] = None) -> Iterator[T]:
+        """Yields all possible configurations"""
+        contents_url = "http://security.ubuntu.com/ubuntu/dists/"
+        request = urlopen(contents_url)
+        data = request.read()
+        parser = UbuntuDistParser()
+        parser.feed(data.decode("utf-8"))
+        for subdir in parser.subdirectories:
+            subdir_url = f"{contents_url}{subdir}"
+            sub_request = urlopen(subdir_url)
+            sub_data = sub_request.read()
+            sub_parser = UbuntuDistParser()
+            sub_parser.feed(sub_data.decode("utf-8"))
+            for contents in sub_parser.contents:
+                arch = contents[len("Contents-"):-len(".gz")]
+                yield cls(
+                    os_version=subdir[:-1],
+                    arch=arch,
+                )
 
     def download(self) -> Iterator[Tuple[str, FrozenSet[str]]]:
         """
@@ -50,16 +115,28 @@ class AptCacheConfig:
             "This is a one-time download and may take a few minutes."
         )
         contents_pattern = re.compile(r"(\S+)\s+(\S.*)")
-        with DownloadWithProgress(contents_url) as p, gzip.open(p, "rb") as gz:
-            for line in iterative_readlines(gz):  # type: ignore
-                m = contents_pattern.match(line.decode("utf-8"))
-                if not m:
-                    raise ValueError(f"Unexpected line: {line!r}")
-                filename = m.group(1)
-                packages = frozenset(
-                    pkg.split("/")[-1].strip() for pkg in m.group(2).split(",")
-                )
-                yield filename, packages
+        try:
+            with DownloadWithProgress(contents_url) as p, gzip.open(p, "rb") as gz:
+                for line in iterative_readlines(gz):  # type: ignore
+                    m = contents_pattern.match(line.decode("utf-8"))
+                    if not m:
+                        raise ValueError(f"Unexpected line: {line!r}")
+                    filename = m.group(1)
+                    packages = frozenset(
+                        pkg.split("/")[-1].strip() for pkg in m.group(2).split(",")
+                    )
+                    yield filename, packages
+            error = None
+        except HTTPError as e:
+            error = e
+        if error is not None:
+            if error.code == 404:
+                raise AptDatabaseNotFoundError(f"Received an HTTP 404 error when trying to download the package "
+                                               f"database for {self.os}:{self.os_version}-{self.arch} from "
+                                               f"{contents_url}")
+            else:
+                raise AptResolutionError(f"Error trying to download the package database for "
+                                         f"{self.os}:{self.os_version}-{self.arch} from {contents_url}: {error!s}")
 
 
 class AptCache:

@@ -23,7 +23,7 @@ from rich.progress import Progress, MofNCompleteColumn, TaskID
 
 from .apt import file_to_packages, prime_caches
 from .containers import Container, ContainerProgress, DockerContainer
-
+from .exceptions import SBOMGenerationError
 
 logger = getLogger(__name__)
 
@@ -69,10 +69,6 @@ class SBOM:
 
     def __str__(self):
         return ", ".join(self.dependencies)
-
-
-class SBOMGenerationError(RuntimeError):
-    pass
 
 
 class NonZeroExit(SBOMGenerationError):
@@ -145,6 +141,10 @@ class SBOMGenerator:
                     break
             return image
         # we need to build the image!
+        logger.info(
+            f"Building the base Docker image…\n"
+            "This is a one-time operation that may take a few minutes."
+        )
         return self.client.images.build(
             path=str(APT_STRACE_DIR),
             tag="trailofbits/apt-strace",

@@ -1,0 +1,2 @@
+class SBOMGenerationError(RuntimeError):
+    pass
