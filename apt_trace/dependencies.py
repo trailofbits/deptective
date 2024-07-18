@@ -366,20 +366,18 @@ class SBOMGeneratorStep(Container):
                     "Error copying the source files to /workdir in the Docker image:"
                     f" {output}"
                 )
-            logger.info("Updating APT sources...")
-            retval, output = container.exec_run("apt-get update -y")
+            logger.info(f"Updating {self.generator.cache.package_manager.NAME} sources...")
+            retval, output = self.generator.cache.package_manager.update(container)
             if retval != 0:
-                raise ValueError(f"Error running `apt-get update`: {output}")
+                raise ValueError(f"Error updating packages: {output}")
         if self.preinstall:
             logger.info(
                 f"Installing {', '.join(self.preinstall)} into {container.short_id}..."
             )
-            retval, output = container.exec_run(
-                f"apt-get -y install {' '.join(self.preinstall)}"
-            )
+            retval, output = self.generator.cache.package_manager.install(container, *self.preinstall)
             if retval != 0:
                 raise PreinstallError(
-                    f"Error apt-get installing {' '.join(self.preinstall)}: {output}"
+                    f"Error installing {' '.join(self.preinstall)}: {output}"
                 )
 
     def _cleanup(self):

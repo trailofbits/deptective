@@ -63,10 +63,14 @@ class Apt(PackageManager):
     NAME = "apt"
 
     def update(self, container: DockerContainer) -> Tuple[int, bytes]:
-        pass
+        return container.exec_run("apt-get update -y")
 
-    def install(self, package: str, container: DockerContainer) -> Tuple[int, bytes]:
-        pass
+    def install(self, container: DockerContainer, *packages: str) -> Tuple[int, bytes]:
+        if not packages:
+            return 0, b""
+        return container.exec_run(
+            f"apt-get -y install {' '.join(packages)}"
+        )
 
     @classmethod
     def versions(cls: Type[T]) -> Iterator[T]:

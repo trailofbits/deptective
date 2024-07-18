@@ -89,7 +89,7 @@ class PackageManager(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def install(self, package: str, container: DockerContainer) -> Tuple[int, bytes]:
+    def install(self, container: DockerContainer, *packages: str) -> Tuple[int, bytes]:
         raise NotImplementedError()
 
     @abstractmethod
