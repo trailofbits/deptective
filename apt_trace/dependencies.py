@@ -21,7 +21,7 @@ import randomname
 from rich.console import Console
 from rich.progress import Progress, MofNCompleteColumn, TaskID
 
-from .apt import file_to_packages, prime_caches
+from .cache import Cache
 from .containers import Container, ContainerProgress, DockerContainer
 from .exceptions import SBOMGenerationError
 
@@ -100,12 +100,13 @@ class IrrelevantPackageInstall(SBOMGenerationError):
 
 
 class SBOMGenerator:
-    def __init__(self, console: Optional[Console] = None):
+    def __init__(self, cache: Cache, console: Optional[Console] = None):
         self._client: Optional[docker.DockerClient] = None
         self._image_name: Optional[str] = None
         if console is None:
             console = Console(log_path=False, file=sys.stderr)
         self.console: Console = console
+        self.cache: Cache = cache
         self.infeasible: Set[SBOM] = set()
         self.feasible: Set[SBOM] = set()
 
@@ -290,7 +291,7 @@ class SBOMGeneratorStep(Container):
         for file in reversed(self.missing_files):
             # reverse the missing files so we try the last missing files first
             new_packages = (
-                set(file_to_packages(file))
+                set(self.generator.cache[file])
                 - self.tried_packages
                 - self.preinstall
                 - history
@@ -393,10 +394,6 @@ class SBOMGeneratorStep(Container):
     def start(self):
         assert self._logdir is None
         if self.level == 0:
-            # make sure that we pre-load the apt cache before starting our task,
-            # otherwise `rich` will mess up its progress bars
-            # AptCache.get().preload()
-            prime_caches()
             self._progress.__enter__()
         if not self.preinstall:
             task_name = f":magnifying_glass_tilted_right: {self.command}"

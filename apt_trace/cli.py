@@ -14,13 +14,14 @@ from rich.table import Table
 from textwrap import dedent
 
 from . import apt
-from .apt import AptDatabaseNotFoundError, AptCacheConfig
+from .apt import AptCacheConfig
+from .cache import Cache
 from .dependencies import (
     PackageResolutionError,
     SBOM,
     SBOMGenerator,
 )
-from .exceptions import SBOMGenerationError
+from .exceptions import SBOMGenerationError, PackageDatabaseNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ def list_supported_configurations(console: Console | None = None):
 
     rows: dict[tuple[str, str], set[str]] = defaultdict(set)
 
-    for version in AptCacheConfig.versions(console=console):
+    for version in AptCacheConfig.versions():
         rows[(version.os, version.os_version)].add(version.arch)
 
     for os, os_version in sorted(rows.keys()):
@@ -56,6 +57,8 @@ def main() -> int:
                         help="the release of the operating system in which to resolve packages (default=noble)")
     parser.add_argument("--arch", type=str, default="amd64",
                         help="the architecture in which to resolve packages (default=amd64)")
+    parser.add_argument("--rebuild", action="store_true", help="forces a rebuild of the package cache "
+                                                               "(requires an Internet connection)")
     results_group = parser.add_mutually_exclusive_group()
     results_group.add_argument(
         "--num-results",
@@ -132,11 +135,22 @@ def main() -> int:
         parser.print_help()
         return 1
 
-    if args.operating_system != "ubuntu":
-        logger.error("The only operating system currently supported is `ubuntu`.")
+    caches = list(Cache.get_caches(os=args.operating_system, os_version=args.release, arch=args.arch))
+    if len(caches) == 0:
+        logger.error(f"There is no package resolver for {args.operating_system}:{args.release}-{args.arch}")
         return 1
+    elif len(caches) > 1:
+        resolver_names = [
+            f"\t{cache.__class__.__name__}\n"
+            for cache in caches
+        ]
+        logger.warning(f"There are multiple package resolvers for {args.operating_system}:{args.release}-{args.arch}:"
+                       f"{''.join(resolver_names)}Using {caches[0].__class__.__name__}")
+    cache = caches[0]
 
-    apt.DEFAULT_CONFIG = AptCacheConfig(os_version=args.release, arch=args.arch)
+    if args.rebuild and cache.exists(cache.config):
+        cache.delete()
+        cache = cache.get(cache.config)
 
     results: List[SBOM] = []
 
@@ -145,7 +159,7 @@ def main() -> int:
 
     try:
         for i, sbom in enumerate(
-            SBOMGenerator(console=console).main(args.command[0], *args.command[1:])
+            SBOMGenerator(cache=cache, console=console).main(args.command[0], *args.command[1:])
         ):
             if not old_stdout.isatty():
                 old_stdout.write(str(sbom))
@@ -167,7 +181,7 @@ def main() -> int:
     except DockerException as e:
         logger.error(f"An error occurred while communicating with Docker: {e!s}")
         return 1
-    except AptDatabaseNotFoundError as e:
+    except PackageDatabaseNotFoundError as e:
         logger.error(f"{e!s}\nPlease make sure that this OS version is still maintained.\n"
                      f"Run `apt-trace --list` for a list of available OS versions and architectures.")
     except SBOMGenerationError as e:
