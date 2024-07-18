@@ -1,15 +1,12 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from inspect import isabstract
 from pathlib import Path
-import platform
-import re
 import sqlite3
-import sys
-from typing import Dict, FrozenSet, Generic, Iterable, Iterator, Optional, Set, Tuple, Type, TypeVar, Union
+from typing import FrozenSet, Iterable, Iterator, Set, Tuple, Type, TypeVar, Union
 
 from appdirs import AppDirs
+from requests import packages
 
+from .package_manager import PackageManager
 
 APP_DIRS = AppDirs("apt-trace", "Trail of Bits")
 CACHE_DIR = Path(APP_DIRS.user_cache_dir)
@@ -19,71 +16,9 @@ if not CACHE_DIR.exists():
 T = TypeVar("T")
 
 
-@dataclass(eq=True, frozen=True)
-class CacheConfig:
-    os: str
-    os_version: str
-    arch: str
-
-    @abstractmethod
-    def iter_packages(self) -> Iterator[Tuple[str, FrozenSet[str]]]:
-        raise NotImplementedError()
-
-    @classmethod
-    @abstractmethod
-    def versions(cls: Type[T]) -> Iterator[T]:
-        raise NotImplementedError()
-
-    @classmethod
-    def get_local(cls: Type[T]) -> Optional[T]:
-        """Returns a config equal to the local operating system, or None if it cannot be determined"""
-        local_os = sys.platform.lower()
-        local_release = platform.release()
-        arch = platform.machine().lower()
-        os_release_path = Path("/etc/os-release")
-        if os_release_path.exists():
-            var_pattern = re.compile(
-                r"\s*(?P<var>\S+)\s*=\s*(\"(?P<quoted>[^\"])*\"|(?P<unquoted>\S*)|\'(?P<singlequoted>[^\'])*\')\s*"
-            )
-            version_id: Optional[str] = None
-            version_codename: Optional[str] = None
-            with open(os_release_path, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    m = var_pattern.match(line)
-                    if m:
-                        var = m["var"].lower()
-                        quoted, unquoted, singlequoted = m["quoted"], m["unquoted"], m["singlequoted"]
-                        if quoted is not None:
-                            value = quoted
-                        elif unquoted is not None:
-                            value = unquoted
-                        elif singlequoted is not None:
-                            value = singlequoted
-                        else:
-                            continue
-                        if var == "id":
-                            local_os = value
-                        elif var == "version_id":
-                            version_id = value
-                        elif var == "version_codename":
-                            version_codename = value
-            if version_codename:
-                local_release = version_codename
-            elif version_id:
-                local_release = version_id
-        return cls(os=local_os, os_version=local_release, arch=arch)
-
-
-C = TypeVar("C", bound=CacheConfig)
-
-
-class Cache(ABC, Generic[C]):
-    LOADED: Dict[CacheConfig, "Cache"]
-    SUBCLASSES: Set[Type["Cache"]]
-
-    def __init__(self, config: C):
-        self.config: C = config
+class Cache(ABC):
+    def __init__(self, package_manager: PackageManager):
+        self.package_manager: PackageManager = package_manager
 
     def __contains__(self, filename: Union[str, bytes, Path]):
         return bool(self[filename])
@@ -103,52 +38,16 @@ class Cache(ABC, Generic[C]):
             ]  # the contents paths do not start with a leading slash
         return self.packages_providing(filename)
 
-    def __enter__(self) -> "Cache[C]":
+    def __enter__(self: T) -> T:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if exc_type is None:
             self.save()
 
-    def __init_subclass__(cls, **kwargs):
-        if not hasattr(Cache, "SUBCLASSES") or Cache.SUBCLASSES is None:
-            setattr(Cache, "SUBCLASSES", set())
-        if not isabstract(cls):
-            Cache.SUBCLASSES.add(cls)
-
-    @classmethod
-    def get_caches(cls: Type[T], os: str, os_version: str, arch: str) -> Iterator[T]:
-        if not hasattr(Cache, "SUBCLASSES") or Cache.SUBCLASSES is None:
-            setattr(Cache, "SUBCLASSES", set())
-        for subclass in Cache.SUBCLASSES:
-            try:
-                config = subclass.get_config(os=os, os_version=os_version, arch=arch)
-                yield subclass.get(config)
-            except (NotImplementedError, ValueError):
-                pass
-
-    @classmethod
-    def get(cls: Type[T], config: C) -> T:
-        if not hasattr(cls, "LOADED") or cls.LOADED is None:
-            setattr(cls, "LOADED", {})
-        if config not in cls.LOADED:
-            if cls.exists(config):
-                cls.LOADED[config] = cls.from_disk(config)
-            else:
-                # No caches on disk: we need to download and persist
-                instance = cls.from_iterable(config, config.iter_packages())
-                cls.LOADED[config] = instance
-                instance.save()
-
-        return cls.LOADED[config]
-
-    @classmethod
-    def get_config(cls, os: str, os_version: str, arch: str) -> C:
-        raise NotImplementedError()
-
     @classmethod
     @abstractmethod
-    def exists(cls, config: C) -> bool:
+    def exists(cls, package_manager: PackageManager) -> bool:
         raise NotImplementedError()
 
     @abstractmethod
@@ -165,11 +64,12 @@ class Cache(ABC, Generic[C]):
 
     @classmethod
     @abstractmethod
-    def from_disk(cls: Type[T], config: C) -> T:
+    def from_disk(cls: Type[T], package_manager: PackageManager) -> T:
         raise NotImplementedError()
 
     @classmethod
-    def from_iterable(cls: Type[T], config: C, packages: Iterable[Tuple[str, Iterable[str]]]) -> T:
+    def from_iterable(cls: Type[T], package_manager: PackageManager,
+                      packages: Iterable[Tuple[str, Iterable[str]]]) -> T:
         """
         Imports the iterable `packages` into the native cache format, returning a new
         cache object.
@@ -181,14 +81,17 @@ class Cache(ABC, Generic[C]):
         raise NotImplementedError()
 
 
-class SQLCache(Cache[C], ABC, Generic[C]):
-    def __init__(self, config: C, conn: sqlite3.Connection):
-        super().__init__(config)
+class SQLCache(Cache, ABC):
+    def __init__(self, package_manager: PackageManager, conn: sqlite3.Connection):
+        super().__init__(package_manager)
         self.conn: sqlite3.Connection = conn
 
     @classmethod
-    def path(cls, config: C) -> Path:
-        return CACHE_DIR / f"{cls.__name__}_{config.os}_{config.os_version}_{config.arch}.sqlite3"
+    def path(cls, package_manager: PackageManager) -> Path:
+        return CACHE_DIR / (
+            f"{package_manager.NAME}_{package_manager.config.os}_{package_manager.config.os_version}_"
+            f"{package_manager.config.arch}.sqlite3"
+        )
 
     def __iter__(self) -> Iterator[Tuple[str, FrozenSet[str]]]:
         cur = self.conn.cursor()
@@ -210,13 +113,16 @@ class SQLCache(Cache[C], ABC, Generic[C]):
             yield filename, frozenset(packages)
 
     @classmethod
-    def from_disk(cls: Type[T], config: C) -> T:
-        db_path = str(cls.path(config))
-        return cls(config, conn=sqlite3.connect(db_path))
+    def from_disk(cls: Type[T], package_manager: PackageManager) -> T:
+        db_path = cls.path(package_manager)
+        if not db_path.exists():
+            return cls.from_iterable(package_manager, package_manager.iter_packages())
+        return cls(package_manager, conn=sqlite3.connect(str(db_path)))
 
     @classmethod
-    def from_iterable(cls: Type[T], config: C, packages: Iterable[Tuple[str, Iterable[str]]]) -> T:
-        ret = cls.from_disk(config)
+    def from_iterable(cls: Type[T], package_manager: PackageManager,
+                      packages: Iterable[Tuple[str, Iterable[str]]]) -> T:
+        ret = cls(package_manager, conn=sqlite3.connect(str(cls.path(package_manager))))
 
         try:
             ret._create_tables()
@@ -228,14 +134,14 @@ class SQLCache(Cache[C], ABC, Generic[C]):
                     )
             return ret
         except:
-            contents_db_path = ret.path(config)
+            contents_db_path = ret.path(package_manager)
             if contents_db_path.exists():
                 contents_db_path.unlink()
             raise
 
     @classmethod
-    def exists(cls, config: C) -> bool:
-        return cls.path(config).exists()
+    def exists(cls, package_manager: PackageManager) -> bool:
+        return cls.path(package_manager).exists()
 
     def packages_providing(self, filename: str) -> FrozenSet[str]:
         cur = self.conn.cursor()
@@ -256,12 +162,10 @@ class SQLCache(Cache[C], ABC, Generic[C]):
         self.conn.commit()
 
     def save(self):
-        contents_db_path = self.path(self.config)
+        contents_db_path = self.path(self.package_manager)
         if not contents_db_path.exists():
             self.conn.commit()
         assert contents_db_path.exists()
 
     def delete(self):
-        self.path(self.config).unlink()
-        if self.config in self.__class__.LOADED:
-            del self.__class__.LOADED[self.config]
+        self.path(self.package_manager).unlink()

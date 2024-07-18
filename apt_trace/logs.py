@@ -32,7 +32,7 @@ def get_console(logger: Logger) -> Console:
     for handler in handlers(logger):
         if isinstance(handler, RichHandler):
             return handler.console
-    raise ValueError
+    return Console()
 
 
 class Download(io.RawIOBase):

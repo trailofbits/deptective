@@ -14,14 +14,15 @@ from rich.table import Table
 
 from textwrap import dedent
 
-from .apt import AptCacheConfig
-from .cache import Cache, CacheConfig
+from . import apt
+from .cache import SQLCache
 from .dependencies import (
     PackageResolutionError,
     SBOM,
     SBOMGenerator,
 )
 from .exceptions import SBOMGenerationError, PackageDatabaseNotFoundError
+from .package_manager import PackageManager, PackagingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -32,17 +33,21 @@ def list_supported_configurations(console: Console | None = None):
 
     table = Table(title="Supported Package Managers")
 
-    table.add_column("OS", justify="left", style="cyan", no_wrap=True)
-    table.add_column("Release", style="magenta")
-    table.add_column("Architectures", justify="right", style="green")
+    table.add_column("Package Manager", justify="left", style="bold cyan", no_wrap=True)
+    table.add_column("OS", justify="left", style="magenta", no_wrap=True)
+    table.add_column("Release", style="green")
+    table.add_column("Architectures", justify="right", style="blue")
 
-    rows: dict[tuple[str, str], set[str]] = defaultdict(set)
+    rows: dict[str, dict[tuple[str, str], set[str]]] = defaultdict(lambda: defaultdict(set))
 
-    for version in AptCacheConfig.versions():
-        rows[(version.os, version.os_version)].add(version.arch)
+    for manager in PackageManager.MANAGERS_BY_NAME.values():
+        for version in manager.versions():
+            rows[version.NAME][(version.config.os, version.config.os_version)].add(version.config.arch)
 
-    for os, os_version in sorted(rows.keys()):
-        table.add_row(os, os_version, ", ".join(sorted(rows[(os, os_version)])))
+    for manager_name in sorted(rows.keys()):
+        row = rows[manager_name]
+        for os, os_version in sorted(row.keys()):
+            table.add_row(manager_name, os, os_version, ", ".join(sorted(row[(os, os_version)])))
 
     console.print(table)
 
@@ -53,14 +58,16 @@ def main() -> int:
         default_release = "noble"
         default_arch = "amd64"
     else:
-        local_config = CacheConfig.get_local()
+        local_config = PackagingConfig.get_local()
         default_os = local_config.os
         default_release = local_config.os_version
         default_arch = local_config.arch
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--list", "-l", action="store_true",
-                        help="list available OS versions for package resolution")
+                        help="list available OS versions and package managers for package resolution")
+    parser.add_argument("--package-manager", "-p", choices=PackageManager.MANAGERS_BY_NAME.keys(),
+                        default="apt", help="the package manager to use (default=apt)")
     parser.add_argument("--operating-system", "-os", type=str, default=default_os,
                         help=f"the operating system in which to resolve packages (default={default_os})")
     parser.add_argument("--release", "-r", type=str, default=default_release,
@@ -146,22 +153,13 @@ def main() -> int:
         parser.print_help()
         return 1
 
-    caches = list(Cache.get_caches(os=args.operating_system, os_version=args.release, arch=args.arch))
-    if len(caches) == 0:
-        logger.error(f"There is no package resolver for {args.operating_system}:{args.release}-{args.arch}")
-        return 1
-    elif len(caches) > 1:
-        resolver_names = [
-            f"\t{cache.__class__.__name__}\n"
-            for cache in caches
-        ]
-        logger.warning(f"There are multiple package resolvers for {args.operating_system}:{args.release}-{args.arch}:"
-                       f"{''.join(resolver_names)}Using {caches[0].__class__.__name__}")
-    cache = caches[0]
+    package_manager = PackageManager.MANAGERS_BY_NAME[args.package_manager](
+        PackagingConfig(os=args.operating_system, os_version=args.release, arch=args.arch)
+    )
+    if args.rebuild and SQLCache.exists(package_manager):
+        SQLCache.path(package_manager).unlink()
 
-    if args.rebuild and cache.exists(cache.config):
-        cache.delete()
-        cache = cache.get(cache.config)
+    cache = SQLCache.from_disk(package_manager)
 
     results: List[SBOM] = []
 

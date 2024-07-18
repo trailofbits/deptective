@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import functools
 import gzip
 from html.parser import HTMLParser
@@ -17,9 +15,10 @@ from typing import (
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
-from .cache import CacheConfig, SQLCache
+from .containers import DockerContainer
 from .exceptions import PackageDatabaseNotFoundError, PackageResolutionError
 from .logs import DownloadWithProgress, iterative_readlines
+from .package_manager import PackageManager, PackagingConfig
 
 
 logger = logging.getLogger(__name__)
@@ -60,7 +59,15 @@ class UbuntuDistParser(HTMLParser):
         pass
 
 
-class AptCacheConfig(CacheConfig):
+class Apt(PackageManager):
+    NAME = "apt"
+
+    def update(self, container: DockerContainer) -> Tuple[int, bytes]:
+        pass
+
+    def install(self, package: str, container: DockerContainer) -> Tuple[int, bytes]:
+        pass
+
     @classmethod
     def versions(cls: Type[T]) -> Iterator[T]:
         """Yields all possible configurations"""
@@ -77,22 +84,19 @@ class AptCacheConfig(CacheConfig):
             sub_parser.feed(sub_data.decode("utf-8"))
             for contents in sub_parser.contents:
                 arch = contents[len("Contents-"):-len(".gz")]
-                yield cls(
+                yield cls(PackagingConfig(
                     os="ubuntu",
                     os_version=subdir[:-1],
                     arch=arch,
-                )
+                ))
 
     def iter_packages(self) -> Iterator[Tuple[str, FrozenSet[str]]]:
-        return self.download()
-
-    def download(self) -> Iterator[Tuple[str, FrozenSet[str]]]:
         """
         Downloads the APT file database and presents it as an iterator.
         """
         contents_url = (
             "http://security.ubuntu.com/ubuntu/dists/"
-            f"{self.os_version}/Contents-{self.arch}.gz"
+            f"{self.config.os_version}/Contents-{self.config.arch}.gz"
         )
         logger.info(
             f"Downloading {contents_url}\n"
@@ -116,29 +120,10 @@ class AptCacheConfig(CacheConfig):
         if error is not None:
             if error.code == 404:
                 raise AptDatabaseNotFoundError(f"Received an HTTP 404 error when trying to download the package "
-                                               f"database for {self.os}:{self.os_version}-{self.arch} from "
+                                               f"database for "
+                                               f"{self.config.os}:{self.config.os_version}-{self.config.arch} from "
                                                f"{contents_url}")
             else:
                 raise AptResolutionError(f"Error trying to download the package database for "
-                                         f"{self.os}:{self.os_version}-{self.arch} from {contents_url}: {error!s}")
-
-
-class AptCache(SQLCache[AptCacheConfig]):
-    @classmethod
-    def get_config(cls, os: str, os_version: str, arch: str) -> AptCacheConfig:
-        if os != "ubuntu":
-            raise ValueError(f"{cls.__name__} only supports `ubuntu` as an os, not {os!r}")
-        return AptCacheConfig(os=os, os_version=os_version, arch=arch)
-
-
-@functools.lru_cache(maxsize=128)
-def file_to_packages(
-    filename: Union[str, bytes, Path],
-    arch: str = "amd64",
-    os_version: str = "noble",
-) -> FrozenSet[str]:
-    logger.debug(f"searching for packages associated with {filename!r}")
-    cache = AptCache.get(AptCache.get_config("ubuntu", os_version, arch))
-    result = cache[filename]
-    logger.debug(f"File {filename!r} is associated with packages {result!r}")
-    return result
+                                         f"{self.config.os}:{self.config.os_version}-{self.config.arch} from "
+                                         f"{contents_url}: {error!s}")
