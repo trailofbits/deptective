@@ -2,8 +2,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from inspect import isabstract
 from pathlib import Path
+import platform
+import re
 import sqlite3
-from typing import Dict, FrozenSet, Generic, Iterable, Iterator, Set, Tuple, Type, TypeVar, Union
+import sys
+from typing import Dict, FrozenSet, Generic, Iterable, Iterator, Optional, Set, Tuple, Type, TypeVar, Union
 
 from appdirs import AppDirs
 
@@ -30,6 +33,46 @@ class CacheConfig:
     @abstractmethod
     def versions(cls: Type[T]) -> Iterator[T]:
         raise NotImplementedError()
+
+    @classmethod
+    def get_local(cls: Type[T]) -> Optional[T]:
+        """Returns a config equal to the local operating system, or None if it cannot be determined"""
+        local_os = sys.platform.lower()
+        local_release = platform.release()
+        arch = platform.machine().lower()
+        os_release_path = Path("/etc/os-release")
+        if os_release_path.exists():
+            var_pattern = re.compile(
+                r"\s*(?P<var>\S+)\s*=\s*(\"(?P<quoted>[^\"])*\"|(?P<unquoted>\S*)|\'(?P<singlequoted>[^\'])*\')\s*"
+            )
+            version_id: Optional[str] = None
+            version_codename: Optional[str] = None
+            with open(os_release_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    m = var_pattern.match(line)
+                    if m:
+                        var = m["var"].lower()
+                        quoted, unquoted, singlequoted = m["quoted"], m["unquoted"], m["singlequoted"]
+                        if quoted is not None:
+                            value = quoted
+                        elif unquoted is not None:
+                            value = unquoted
+                        elif singlequoted is not None:
+                            value = singlequoted
+                        else:
+                            continue
+                        if var == "id":
+                            local_os = value
+                        elif var == "version_id":
+                            version_id = value
+                        elif var == "version_codename":
+                            version_codename = value
+            if version_codename:
+                local_release = version_codename
+            elif version_id:
+                local_release = version_id
+        return cls(os=local_os, os_version=local_release, arch=arch)
 
 
 C = TypeVar("C", bound=CacheConfig)

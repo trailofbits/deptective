@@ -1,4 +1,5 @@
 import argparse
+import platform
 from collections import defaultdict
 import logging
 import sys
@@ -13,9 +14,8 @@ from rich.table import Table
 
 from textwrap import dedent
 
-from . import apt
 from .apt import AptCacheConfig
-from .cache import Cache
+from .cache import Cache, CacheConfig
 from .dependencies import (
     PackageResolutionError,
     SBOM,
@@ -48,15 +48,26 @@ def list_supported_configurations(console: Console | None = None):
 
 
 def main() -> int:
+    if platform.system().lower() != "linux":
+        default_os = "ubuntu"
+        default_release = "noble"
+        default_arch = "amd64"
+    else:
+        local_config = CacheConfig.get_local()
+        default_os = local_config.os
+        default_release = local_config.os_version
+        default_arch = local_config.arch
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--list", "-l", action="store_true",
                         help="list available OS versions for package resolution")
-    parser.add_argument("--operating-system", "-os", type=str, default="ubuntu",
-                        help="the operating system in which to resolve packages (default=ubuntu)")
-    parser.add_argument("--release", "-r", type=str, default="noble",
-                        help="the release of the operating system in which to resolve packages (default=noble)")
-    parser.add_argument("--arch", type=str, default="amd64",
-                        help="the architecture in which to resolve packages (default=amd64)")
+    parser.add_argument("--operating-system", "-os", type=str, default=default_os,
+                        help=f"the operating system in which to resolve packages (default={default_os})")
+    parser.add_argument("--release", "-r", type=str, default=default_release,
+                        help=f"the release of the operating system in which to resolve packages "
+                             f"(default={default_release})")
+    parser.add_argument("--arch", type=str, default=default_arch,
+                        help=f"the architecture in which to resolve packages (default={default_arch})")
     parser.add_argument("--rebuild", action="store_true", help="forces a rebuild of the package cache "
                                                                "(requires an Internet connection)")
     results_group = parser.add_mutually_exclusive_group()
