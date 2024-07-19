@@ -414,6 +414,19 @@ class SBOMGeneratorStep(Container):
             retval, output = self.generator.cache.package_manager.update(container)
             if retval != 0:
                 raise ValueError(f"Error updating packages: {output}")
+            # add the command and its relevant arguments to the missing files:
+            for arg in self.args:
+                if arg.startswith("/"):
+                    self.missing_files.append(arg)
+            if self.command.startswith("/"):
+                self.missing_files.append(self.command)
+            elif not self.command.startswith("."):
+                # determine the $PATH inside the container:
+                retval, output = container.exec_run("printenv PATH")
+                if retval != 0:
+                    raise ValueError(f"Error determining the $PATH inside of the container: {output}")
+                for path in (p.strip() for p in output.decode("utf-8").split(":")):
+                    self.missing_files.append(str(Path(path) / self.command))
         if self.preinstall:
             logger.info(
                 f"Installing {', '.join(self.preinstall)} into {container.short_id}..."
