@@ -1,7 +1,10 @@
+import os
 import time
+from io import BytesIO
 from logging import getLogger
 from pathlib import Path
 import sys
+import tarfile
 from tempfile import TemporaryDirectory
 from typing import (
     Dict,
@@ -21,7 +24,7 @@ import randomname
 from rich.console import Console
 from rich.progress import Progress, MofNCompleteColumn, TaskID
 
-from .cache import Cache
+from .cache import Cache, CACHE_DIR
 from .containers import Container, ContainerProgress, DockerContainer
 from .exceptions import SBOMGenerationError
 
@@ -99,6 +102,31 @@ class IrrelevantPackageInstall(SBOMGenerationError):
     pass
 
 
+def build_context(root_path: Path | str, dockerfile: str) -> BytesIO:
+    fh = BytesIO()
+    with tarfile.open(fileobj=fh, mode="w") as tar:
+        def dockerfile_filter(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+            if info.name in ("Dockerfile", "./Dockerfile"):
+                return None
+            else:
+                return info
+
+        old_cwd = Path.cwd()
+        try:
+            os.chdir(root_path)
+            tar.add(".", recursive=True, filter=dockerfile_filter)
+        finally:
+            os.chdir(old_cwd)
+        dockerfile_utf8 = dockerfile.encode("utf-8")
+        dockerfile_bytes = BytesIO(dockerfile_utf8)
+        dockerfile_bytes.seek(0)
+        info = tarfile.TarInfo(name="./Dockerfile")
+        info.size = len(dockerfile_utf8)
+        tar.addfile(info, dockerfile_bytes)
+    fh.seek(0)
+    return fh
+
+
 class SBOMGenerator:
     def __init__(self, cache: Cache, console: Optional[Console] = None):
         self._client: Optional[docker.DockerClient] = None
@@ -128,30 +156,46 @@ class SBOMGenerator:
 
     @property
     def apt_strace_image(self) -> Image:
-        for image in self.client.images.list(name="trailofbits/apt-strace"):
-            history = image.history()
-            if history:
-                creation_time = max(c["Created"] for c in image.history())
-                dockerfile = APT_STRACE_DIR / "Dockerfile"
-                source = APT_STRACE_DIR / "apt-strace.c"
-                min_creation_time = max(
-                    dockerfile.stat().st_mtime, source.stat().st_mtime
-                )
-                if creation_time < min_creation_time:
-                    # it needs to be rebuilt!
-                    break
-            return image
+        pm = self.cache.package_manager
+        dockerfile = pm.dockerfile()
+        pm_suffix = f"{pm.NAME}-{pm.config.os}-{pm.config.os_version}-{pm.config.arch}"
+        cached_dockerfile_path = CACHE_DIR / (
+            f"Dockerfile-{pm_suffix}"
+        )
+        image_name = f"trailofbits/apt-strace-{pm_suffix}"
+        if not cached_dockerfile_path.exists():
+            cached_content = ""
+        else:
+            with open(cached_dockerfile_path, "r") as f:
+                cached_content = f.read()
+        if dockerfile == cached_content:
+            # the dockerfile hasn't changed
+            for image in self.client.images.list(name=image_name):
+                history = image.history()
+                if history:
+                    creation_time = max(c["Created"] for c in image.history())
+                    source = APT_STRACE_DIR / "apt-strace.c"
+                    min_creation_time = source.stat().st_mtime
+                    if creation_time < min_creation_time:
+                        # it needs to be rebuilt!
+                        break
+                return image
         # we need to build the image!
         logger.info(
             f"Building the base Docker image…\n"
             "This is a one-time operation that may take a few minutes."
         )
-        return self.client.images.build(
-            path=str(APT_STRACE_DIR),
-            tag="trailofbits/apt-strace",
+        result = self.client.images.build(
+            fileobj=build_context(str(APT_STRACE_DIR), dockerfile),
+            dockerfile="./Dockerfile",
+            custom_context=True,
+            tag=image_name,
             rm=True,
             pull=True,
         )[0]
+        with open(cached_dockerfile_path, "w") as f:
+            f.write(dockerfile)
+        return result
 
     def main(self, command: str, *args: str) -> Iterator[SBOM]:
         with SBOMGeneratorStep(self, command, args) as step:

@@ -4,7 +4,6 @@ import sqlite3
 from typing import FrozenSet, Iterable, Iterator, Set, Tuple, Type, TypeVar, Union
 
 from appdirs import AppDirs
-from requests import packages
 
 from .package_manager import PackageManager
 

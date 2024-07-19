@@ -131,3 +131,22 @@ class Apt(PackageManager):
                 raise AptResolutionError(f"Error trying to download the package database for "
                                          f"{self.config.os}:{self.config.os_version}-{self.config.arch} from "
                                          f"{contents_url}: {error!s}")
+
+    def dockerfile(self) -> str:
+        return f"""FROM {self.config.os}:{self.config.os_version} AS builder
+        
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get -y update && apt-get install -y gcc linux-headers-generic python3
+COPY apt-strace.c /
+RUN gcc apt-strace.c -Wall -Wextra -Werror -o apt-strace
+
+FROM {self.config.os}:{self.config.os_version}
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get -y update
+RUN echo "APT::Get::Install-Recommends \"false\";" >> /etc/apt/apt.conf
+RUN echo "APT::Get::Install-Suggests \"false\";" >> /etc/apt/apt.conf
+RUN mkdir /src/
+COPY --from=builder /apt-strace /usr/bin/
+
+ENTRYPOINT ["/usr/bin/apt-strace"]
+"""

@@ -99,3 +99,7 @@ class PackageManager(ABC):
     @classmethod
     def versions(cls: Type[T]) -> Iterator[T]:
         raise NotImplementedError()
+
+    @abstractmethod
+    def dockerfile(self) -> str:
+        raise NotImplementedError()
