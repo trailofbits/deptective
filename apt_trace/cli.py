@@ -188,7 +188,11 @@ def main() -> int:
             if not args.all and 0 < args.num_results and i == args.num_results - 1:
                 break
     except DockerException as e:
-        logger.error(f"An error occurred while communicating with Docker: {e!s}")
+        msg = str(e)
+        if "ConnectionRefusedError" in msg or "Connection aborted" in msg:
+            logger.error(f"Could not connect to Docker. Is it running?")
+        else:
+            logger.error(f"An error occurred while communicating with Docker: {msg}")
         return 1
     except PackageDatabaseNotFoundError as e:
         logger.error(f"{e!s}\nPlease make sure that this OS version is still maintained.\n"
