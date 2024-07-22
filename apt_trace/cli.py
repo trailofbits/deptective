@@ -145,7 +145,8 @@ def main() -> int:
     if args.list:
         list_supported_configurations(console)
         console.print("\n")
-        console.print("Use ")
+        console.print("Use the `--package-manager`, `--operating-system`, `--release`, and `--arch` options to specify "
+                      "your desired runtime environment.\n")
         if not args.command:
             return 0
 
