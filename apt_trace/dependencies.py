@@ -3,6 +3,7 @@ import time
 from io import BytesIO
 from logging import getLogger
 from pathlib import Path
+import re
 import sys
 import tarfile
 from tempfile import TemporaryDirectory
@@ -27,11 +28,13 @@ from rich.progress import Progress, MofNCompleteColumn, TaskID
 from .cache import Cache, CACHE_DIR
 from .containers import Container, ContainerProgress, DockerContainer
 from .exceptions import SBOMGenerationError
+from .syscalls import parse_syscall_args
+
 
 logger = getLogger(__name__)
 
 
-APT_STRACE_DIR = Path(__file__).absolute().parent / "apt-strace"
+APT_STRACE_DIR = Path(__file__).absolute().parent / "strace"
 
 
 class SBOM:
@@ -174,7 +177,7 @@ class SBOMGenerator:
                 history = image.history()
                 if history:
                     creation_time = max(c["Created"] for c in image.history())
-                    source = APT_STRACE_DIR / "apt-strace.c"
+                    source = APT_STRACE_DIR / "apt-strace"
                     min_creation_time = source.stat().st_mtime
                     if creation_time < min_creation_time:
                         # it needs to be rebuilt!
@@ -283,30 +286,42 @@ class SBOMGeneratorStep(Container):
 
     def find_feasible_sboms(self) -> Iterator[SBOM]:
         logger.debug(f"Running step {self.level}...")
-        try:
-            logger.debug(f"apt-strace /log/apt-trace.txt {self.full_command}")
-            exe = self.run(
-                ["/log/apt-trace.txt", self.command] + list(self.args),
-                entrypoint="/usr/bin/apt-strace",
-                workdir="/workdir",
-            )
-            self._progress.execute(
-                exe,
-                title=self.full_command,
-                subtitle=self.sbom.rich_str,
-                scrollback=5,
-            )
-            while not exe.done:
-                self._progress.refresh()
-                time.sleep(0.5)
-            self.retval = exe.exit_code
-            self.command_output = exe.output
-        finally:
-            logger.debug(f"Ran, exit code {self.retval}")
-        with open(self._logdir / "apt-trace.txt") as log:
-            for line in log:
-                if line.startswith("missing\t"):
-                    self.missing_files.append(line[len("missing\t") :].strip())
+        with self:
+            # open a context so we keep the container running after the `self.run` command
+            # so we can query it for missing files
+            try:
+                logger.debug(f"apt-strace /log/apt-trace.txt {self.full_command}")
+                exe = self.run(
+                    ["/log/apt-trace.txt", self.command] + list(self.args),
+                    entrypoint="/usr/bin/apt-strace",
+                    workdir="/workdir",
+                )
+                self._progress.execute(
+                    exe,
+                    title=self.full_command,
+                    subtitle=self.sbom.rich_str,
+                    scrollback=5,
+                )
+                while not exe.done:
+                    self._progress.refresh()
+                    time.sleep(0.5)
+                self.retval = exe.exit_code
+                self.command_output = exe.output
+            finally:
+                logger.debug(f"Ran, exit code {self.retval}")
+            strace_pattern = re.compile(
+                r"\s*(\d*\s+)?(?P<syscall>[^(]+)\((?P<args>[^)]+)\)\s*=\s*(?P<retval>-?\d+).*", flags=re.MULTILINE)
+            with open(self._logdir / "apt-trace.txt") as log:
+                for line in log:
+                    m = strace_pattern.match(line)
+                    if m:
+                        for arg in parse_syscall_args(m.group("args")):
+                            if not arg.quoted or not arg.value.startswith("/"):
+                                continue
+                            if not exe.container.file_exists(arg.value):
+                                self.missing_files.append(arg.value)
+                    else:
+                        logger.warning(f"Could not parse strace output: {line!r}")
         logger.debug(self.missing_files)
         if self.retval == 0:
             yield SBOM()

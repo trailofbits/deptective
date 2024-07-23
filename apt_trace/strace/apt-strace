@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -e
+strace-native -f -e trace=file -o "$1" "${@:2}"

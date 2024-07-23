@@ -1,8 +1,10 @@
 import logging
 import functools
+from pathlib import Path
 from typing import Dict, List, Literal, Optional, Self, TypeVar, Union
 
 import docker
+import requests.exceptions
 from docker.client import DockerClient
 from docker.errors import NotFound
 from docker.models.containers import Container as DockerContainer
@@ -138,14 +140,30 @@ class Container:
     def setup_image(self, container: DockerContainer):
         pass
 
-    def run(
+    def file_exists(self, path: Path | str):
+        with self:
+            container = self.create(command="")
+            try:
+                _ = container.get_archive(str(path))
+                return True
+            except NotFound:
+                return False
+            finally:
+                try:
+                    container.stop()
+                    container.remove(force=True)
+                    logger.debug(f"Waiting for container {container.id} to be removed...")
+                    container.wait(condition="removed")
+                except (NotFound, requests.exceptions.ReadTimeout):
+                    pass
+
+    def create(
         self,
         command: Union[str, List[str]],
         workdir: str = "/workdir",
         entrypoint: str = "/bin/bash",
-    ) -> Execution:
-        self.__enter__()
-        try:
+    ) -> DockerContainer:
+        with self:
             image = self.image.id
 
             container = self.client.containers.create(
@@ -161,9 +179,7 @@ class Container:
             try:
                 container.start()
 
-                return Execution(
-                    self, container
-                )  # this calls self.__exit__(...) when it is complete
+                return container
             except Exception:
                 try:
                     container.remove(force=True)
@@ -175,6 +191,18 @@ class Container:
                 except NotFound:
                     logger.debug(f"Container {container.id} was already removed")
                     raise
+
+    def run(
+        self,
+        command: Union[str, List[str]],
+        workdir: str = "/workdir",
+        entrypoint: str = "/bin/bash",
+    ) -> Execution:
+        self.__enter__()
+        try:
+            return Execution(
+                self, self.create(command=command, workdir=workdir, entrypoint=entrypoint)
+            )  # this calls self.__exit__(...) when it is complete
         except RuntimeError as e:
             self.__exit__(type(e), e, None)
             raise

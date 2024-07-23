@@ -136,9 +136,7 @@ class Apt(PackageManager):
         return f"""FROM {self.config.os}:{self.config.os_version} AS builder
         
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get -y update && apt-get install -y gcc linux-headers-generic python3
-COPY apt-strace.c /
-RUN gcc apt-strace.c -Wall -Wextra -Werror -o apt-strace
+RUN apt-get -y update && apt-get install -y strace
 
 FROM {self.config.os}:{self.config.os_version}
 ENV DEBIAN_FRONTEND=noninteractive
@@ -146,7 +144,8 @@ RUN apt-get -y update
 RUN echo "APT::Get::Install-Recommends \"false\";" >> /etc/apt/apt.conf
 RUN echo "APT::Get::Install-Suggests \"false\";" >> /etc/apt/apt.conf
 RUN mkdir /src/
-COPY --from=builder /apt-strace /usr/bin/
+COPY --from=builder /usr/bin/strace /usr/bin/strace-native
+COPY apt-strace /usr/bin/apt-strace
 
 ENTRYPOINT ["/usr/bin/apt-strace"]
 """
