@@ -2,6 +2,7 @@ import argparse
 import platform
 from collections import defaultdict
 import logging
+import requests
 import sys
 from typing import List
 
@@ -195,6 +196,8 @@ def main() -> int:
         else:
             logger.error(f"An error occurred while communicating with Docker: {msg}")
         return 1
+    except requests.exceptions.Timeout as e:
+        logger.error(f"Timed out while waiting for a response: {e!s}")
     except PackageDatabaseNotFoundError as e:
         logger.error(f"{e!s}\nPlease make sure that this OS version is still maintained.\n"
                      f"Run `apt-trace --list` for a list of available OS versions and architectures.")

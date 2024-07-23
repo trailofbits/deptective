@@ -52,7 +52,8 @@ class Execution:
     @functools.cached_property
     def output(self) -> bytes:
         try:
-            self.exit_code
+            # the following line blocks until the container's processes completes:
+            _ = self.exit_code
             return self.docker_container.logs(stdout=True, stderr=True)
         finally:
             self.close()
@@ -140,22 +141,32 @@ class Container:
     def setup_image(self, container: DockerContainer):
         pass
 
-    def file_exists(self, path: Path | str):
+    def files_exist(self, *paths: Path | str) -> dict[str, bool]:
+        paths = {str(p) for p in paths}
+        ret: dict[str, bool] = {}
+        if not paths:
+            return ret
         with self:
             container = self.create(command="")
             try:
-                _ = container.get_archive(str(path))
-                return True
-            except NotFound:
-                return False
+                for path in paths:
+                    try:
+                        _ = container.get_archive(path)
+                        ret[path] = True
+                    except NotFound:
+                        ret[path] = False
             finally:
                 try:
                     container.stop()
                     container.remove(force=True)
                     logger.debug(f"Waiting for container {container.id} to be removed...")
                     container.wait(condition="removed")
-                except (NotFound, requests.exceptions.ReadTimeout):
+                except (NotFound, requests.exceptions.Timeout):
                     pass
+            return ret
+
+    def file_exists(self, path: Path | str) -> bool:
+        return self.files_exist(path)[str(path)]
 
     def create(
         self,
@@ -240,8 +251,11 @@ class Container:
         if self._image is None:
             raise ValueError("The container is not running!")
         logger.debug(f"Removing image {self.image_name}:{self.level} ...")
-        self._image.remove(force=True)
-        logger.debug("Removed.")
+        try:
+            self._image.remove(force=True)
+            logger.debug("Removed.")
+        except requests.exceptions.Timeout as e:
+            logger.warning(f"Timed out waiting for container to be removed: {e!s}")
         self._image = None
         if isinstance(self.parent, Container):
             self.parent.__exit__(None, None, None)

@@ -1,7 +1,7 @@
 import os
 import time
 from io import BytesIO
-from logging import getLogger
+from logging import DEBUG, getLogger
 from pathlib import Path
 import re
 import sys
@@ -311,6 +311,10 @@ class SBOMGeneratorStep(Container):
                 logger.debug(f"Ran, exit code {self.retval}")
             strace_pattern = re.compile(
                 r"\s*(\d*\s+)?(?P<syscall>[^(]+)\((?P<args>[^)]+)\)\s*=\s*(?P<retval>-?\d+).*", flags=re.MULTILINE)
+            strace_ignore_pattern = re.compile(
+                r".*?(\+\+\+\s*exited with \d+\s*\+\+\+|---\s*SIGCHLD).*",
+                flags=re.MULTILINE)
+            accessed_files: set[str] = set()
             with open(self._logdir / "apt-trace.txt") as log:
                 for line in log:
                     m = strace_pattern.match(line)
@@ -318,11 +322,17 @@ class SBOMGeneratorStep(Container):
                         for arg in parse_syscall_args(m.group("args")):
                             if not arg.quoted or not arg.value.startswith("/"):
                                 continue
-                            if not exe.container.file_exists(arg.value):
-                                self.missing_files.append(arg.value)
-                    else:
+                            accessed_files.add(arg.value)
+                    elif not strace_ignore_pattern.match(line):
                         logger.warning(f"Could not parse strace output: {line!r}")
-        logger.debug(self.missing_files)
+            file_existence = exe.container.files_exist(*accessed_files)
+            if logger.level <= DEBUG:
+                if file_existence:
+                    af = (f"\n{p} ({['NOT FOUND', 'EXISTS'][exists]})" for p, exists in file_existence)
+                    logger.debug(f"Accessed files: {''.join(af)}")
+                else:
+                    logger.debug("No files accessed.")
+            self.missing_files.extend((p for p, exists in file_existence if not exists))
         if self.retval == 0:
             yield SBOM()
             return
