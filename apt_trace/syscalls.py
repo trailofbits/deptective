@@ -201,8 +201,14 @@ def parse_list(text: ParsingContext) -> ListArg:
         if first:
             first = False
         elif text:
-            text.expect(",")
-            text.lstrip()
+            if text.peek(n=3) == "...":
+                text.offset += 3
+                text.lstrip()
+                items.append(Arg("..."))
+                break
+            else:
+                text.expect(",")
+                text.lstrip()
         items.append(parse_syscall_arg(text))
     text.expect("]")
     return ListArg(*items)

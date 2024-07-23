@@ -310,7 +310,7 @@ class SBOMGeneratorStep(Container):
             finally:
                 logger.debug(f"Ran, exit code {self.retval}")
             strace_pattern = re.compile(
-                r"\s*(\d*\s+)?(?P<syscall>[^(]+)\((?P<args>[^)]+)\)\s*=\s*(?P<retval>-?\d+).*", flags=re.MULTILINE)
+                r"\s*(\d*\s+)?(?P<syscall>.+)\((?P<args>[^)]+)\)\s*=\s*(?P<retval>-?\d+).*", flags=re.MULTILINE)
             strace_ignore_pattern = re.compile(
                 r".*?(\+\+\+\s*exited with \d+\s*\+\+\+|---\s*SIGCHLD).*",
                 flags=re.MULTILINE)

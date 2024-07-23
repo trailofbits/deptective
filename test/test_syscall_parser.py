@@ -18,5 +18,14 @@ class TestSyscallParser(TestCase):
                             Arg("user.email", quoted=True)
                         ), Arg("0xffffcd377c68 / * 8 vars * /"))
                 ),
+                (
+                        '"/usr/bin/expr", ["expr", "a", ":", "\\\\(a\\\\)"], 0xaaab113a4980 / * 14 vars * /',
+                        (Arg("/usr/bin/expr", quoted=True), ListArg(
+                            Arg("expr", quoted=True),
+                            Arg("a", quoted=True),
+                            Arg(":", quoted=True),
+                            Arg("\\(a\\)", quoted=True)
+                        ), Arg("0xaaab113a4980 / * 14 vars * /"))
+                )
         ):
             self.assertEqual(expected, tuple(parse_syscall_args(args)))
