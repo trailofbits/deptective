@@ -1,6 +1,7 @@
 import logging
 import functools
 from pathlib import Path
+import sys
 from typing import Dict, List, Literal, Optional, Self, TypeVar, Union
 
 import docker
@@ -12,8 +13,9 @@ from docker.models.images import Image
 
 import randomname
 
+from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress
+from rich.progress import Progress, track
 
 
 logger = logging.getLogger(__name__)
@@ -141,7 +143,7 @@ class Container:
     def setup_image(self, container: DockerContainer):
         pass
 
-    def files_exist(self, *paths: Path | str) -> dict[str, bool]:
+    def files_exist(self, *paths: Path | str, progress: Progress | None = None) -> dict[str, bool]:
         paths = {str(p) for p in paths}
         ret: dict[str, bool] = {}
         if not paths:
@@ -149,12 +151,14 @@ class Container:
         with self:
             container = self.create(command="")
             try:
-                for path in paths:
-                    try:
-                        _ = container.get_archive(path)
-                        ret[path] = True
-                    except NotFound:
-                        ret[path] = False
+                if progress is None:
+                    iterator = iter(paths)
+                else:
+                    iterator = progress.track(paths, description="checking for missing files…")
+                for path in iterator:
+                    ret[path] = container.exec_run(
+                        ["ls", path], workdir="/workdir", stdout=False, stderr=False
+                    ).exit_code == 0
             finally:
                 try:
                     container.stop()
@@ -278,10 +282,11 @@ class Container:
 
 
 class ContainerProgress(Progress):
-    _execution: Optional[Execution] = None
+    execution: Optional[Execution] = None
     _scrollback: int = 10
     _exec_title: Optional[str] = None
     _exec_subtitle: Optional[str] = None
+    _file_progress: Optional[Progress] = None
 
     def execute(
         self,
@@ -290,21 +295,32 @@ class ContainerProgress(Progress):
         subtitle: Optional[str] = None,
         scrollback: int = 10,
     ):
-        if self._execution is not None and not self._execution.done:
+        if self.execution is not None and not self.execution.done:
             raise ValueError("An execution is already assigned to this progress!")
-        self._execution = execution
+        self.execution = execution
         self._scrollback = scrollback
         self._exec_title = title
         self._exec_subtitle = subtitle
+        self._file_progress = None
+
+    @property
+    def file_progress(self) -> Progress | None:
+        return self._file_progress
+
+    @file_progress.setter
+    def file_progress(self, progress: Progress | None):
+        if progress is not self._file_progress:
+            self._file_progress = progress
+            self.refresh()
 
     def get_renderables(self):
         yield self.make_tasks_table(self.tasks)
-        if self._execution is not None:
-            if self._execution.done:
-                self._execution = None
+        if self.execution is not None:
+            if self.execution.done:
+                self.execution = None
             else:
                 lines: List[str] = []
-                for line in self._execution.logs(scrollback=self._scrollback).split(
+                for line in self.execution.logs(scrollback=self._scrollback).split(
                     b"\n"
                 ):
                     try:
@@ -318,3 +334,5 @@ class ContainerProgress(Progress):
                     title=self._exec_title,
                     subtitle=self._exec_subtitle,
                 )
+        if self.file_progress is not None:
+            yield self.file_progress

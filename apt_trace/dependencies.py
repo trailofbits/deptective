@@ -3,7 +3,6 @@ import time
 from io import BytesIO
 from logging import DEBUG, getLogger
 from pathlib import Path
-import re
 import sys
 import tarfile
 from tempfile import TemporaryDirectory
@@ -28,7 +27,7 @@ from rich.progress import Progress, MofNCompleteColumn, TaskID
 from .cache import Cache, CACHE_DIR
 from .containers import Container, ContainerProgress, DockerContainer
 from .exceptions import SBOMGenerationError
-from .syscalls import parse_syscall_args
+from .strace import ParseError, lazy_parse_paths
 
 
 logger = getLogger(__name__)
@@ -245,6 +244,24 @@ class SBOMGeneratorStep(Container):
         self.missing_files: List[str] = []
         self._task: Optional[TaskID] = None
 
+    def _missing_files(self, container: Container, *paths: Path | str) -> Set[str]:
+        to_check: Set[str] = {str(p) for p in paths}
+        progress = Progress(transient=True, console=self._progress.console)
+        self._progress.file_progress = progress
+        try:
+            file_existence = container.files_exist(*(
+                    to_check - set(self.missing_files)
+            ), progress=progress)
+            if logger.level <= DEBUG:
+                if file_existence:
+                    af = (f"\n{p} ({['NOT FOUND', 'EXISTS'][exists]})" for p, exists in file_existence.items())
+                    logger.debug(f"Accessed files: {''.join(af)}")
+                else:
+                    logger.debug("No files accessed.")
+        finally:
+            self._progress.file_progress = None
+        return {p for p, exists in file_existence.items() if not exists}
+
     @property
     def full_command(self) -> str:
         if self.args:
@@ -309,30 +326,18 @@ class SBOMGeneratorStep(Container):
                 self.command_output = exe.output
             finally:
                 logger.debug(f"Ran, exit code {self.retval}")
-            strace_pattern = re.compile(
-                r"\s*(\d*\s+)?(?P<syscall>.+)\((?P<args>[^)]+)\)\s*=\s*(?P<retval>-?\d+).*", flags=re.MULTILINE)
-            strace_ignore_pattern = re.compile(
-                r".*?(\+\+\+\s*exited with \d+\s*\+\+\+|---\s*SIGCHLD).*",
-                flags=re.MULTILINE)
             accessed_files: set[str] = set()
             with open(self._logdir / "apt-trace.txt") as log:
                 for line in log:
-                    m = strace_pattern.match(line)
-                    if m:
-                        for arg in parse_syscall_args(m.group("args")):
-                            if not arg.quoted or not arg.value.startswith("/"):
-                                continue
-                            accessed_files.add(arg.value)
-                    elif not strace_ignore_pattern.match(line):
-                        logger.warning(f"Could not parse strace output: {line!r}")
-            file_existence = exe.container.files_exist(*accessed_files)
-            if logger.level <= DEBUG:
-                if file_existence:
-                    af = (f"\n{p} ({['NOT FOUND', 'EXISTS'][exists]})" for p, exists in file_existence)
-                    logger.debug(f"Accessed files: {''.join(af)}")
-                else:
-                    logger.debug("No files accessed.")
-            self.missing_files.extend((p for p, exists in file_existence if not exists))
+                    try:
+                        for arg in lazy_parse_paths(line):
+                            if arg.startswith("/"):
+                                accessed_files.add(arg)
+                    except ParseError as e:
+                        logger.warning(str(e))
+                        continue
+
+            self.missing_files.extend(self._missing_files(exe.container, *accessed_files))
         if self.retval == 0:
             yield SBOM()
             return

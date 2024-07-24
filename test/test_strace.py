@@ -1,10 +1,10 @@
 from unittest import TestCase
 
-from apt_trace.syscalls import Arg, ListArg, parse_syscall_args
+from apt_trace.strace import Arg, ListArg, parse_strace_log_line, parse_syscall_args
 
 
-class TestSyscallParser(TestCase):
-    def test_syscall_arg_parser(self):
+class TestStrace(TestCase):
+    def test_strace_arg_parser(self):
         for args, expected in (
                 (
                         'AT_FDCWD, "/etc/ld.so.preload", R_OK',
@@ -29,3 +29,9 @@ class TestSyscallParser(TestCase):
                 )
         ):
             self.assertEqual(expected, tuple(parse_syscall_args(args)))
+
+    def test_exited_line(self):
+        syscall, args, retval = parse_strace_log_line('11    +++ exited with 0 +++')
+        self.assertIsNone(syscall)
+        self.assertEqual((), tuple(args))
+        self.assertEqual(1, retval)

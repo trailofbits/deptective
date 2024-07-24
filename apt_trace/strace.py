@@ -1,5 +1,6 @@
 from functools import wraps
 from logging import getLogger
+import re
 from typing import Callable, Iterator
 
 logger = getLogger(__name__)
@@ -263,3 +264,43 @@ def parse_syscall_args(args: str | ParsingContext) -> Iterator[Arg]:
             break
         yield ret
     args.expect()
+
+
+strace_pattern = re.compile(
+    r"\s*(\d*\s+)?(?P<syscall>.+)\((?P<args>[^)]+)\)\s*=\s*(?P<retval>-?\d+).*",
+    flags=re.MULTILINE
+)
+strace_ignore_pattern = re.compile(
+    r".*?(\+\+\+\s*exited with \d+\s*\+\+\+|---\s*SIGCHLD).*",
+    flags=re.MULTILINE
+)
+strace_resumed_pattern = re.compile(
+    r".*?<\s*...\s*(?P<syscall>\S+)\s+resumed>(?P<remainder>.*)$",
+    flags=re.MULTILINE
+)
+
+
+def parse_strace_log_line(line: str) -> tuple[str | None, Iterator[Arg], int]:
+    line = line.replace("<unfinished ...>", ")")
+
+    m = strace_resumed_pattern.match(line)
+    if m:
+        line = f"{m.group('syscall')}({m.group('remainder')}"
+
+    m = strace_pattern.match(line)
+    if m:
+        return m.group("syscall"), parse_syscall_args(m.group("args")), int(m.group("retval"))
+    elif not strace_ignore_pattern.match(line):
+        raise ParseError(f"Could not parse strace output: {line!r}")
+    else:
+        return None, iter(()), 1
+
+
+def lazy_parse_paths(line: str) -> Iterator[str]:
+    text = ParsingContext(line)
+    while text:
+        result = text.try_production(parse_quoted_string)
+        if result:
+            yield result.value
+        else:
+            text.offset += 1
