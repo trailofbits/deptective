@@ -81,9 +81,10 @@ class NonZeroExit(SBOMGenerationError):
 
 
 class PackageResolutionError(SBOMGenerationError):
-    def __init__(self, message: str, command_output: bytes | None = None):
+    def __init__(self, message: str, command_output: bytes | None = None, partial_sbom: SBOM | None = None):
         super().__init__(message)
         self.command_output: bytes | None = command_output
+        self.partial_sbom: SBOM | None = partial_sbom
 
     @property
     def command_output_str(self) -> str | None:
@@ -217,8 +218,12 @@ class SBOMGeneratorStep(Container):
     ):
         if parent is None:
             p: Union[Image, SBOMGeneratorStep] = generator.apt_strace_image
+            self.root: SBOMGeneratorStep = self
+            self._best_sbom: SBOMGeneratorStep = self
         else:
             p = parent
+            self.root = parent.root
+            self._best_sbom = None
         super().__init__(parent=p, client=generator.client)
         self._log_tmpdir: Optional[TemporaryDirectory] = None
         self._logdir: Optional[Path] = None
@@ -230,6 +235,8 @@ class SBOMGeneratorStep(Container):
         if parent is not None:
             self.tried_packages: Set[str] = parent.tried_packages | parent.preinstall
             self._progress: ContainerProgress = parent._progress
+            if self.level > self.best_sbom.level:
+                self.root._best_sbom = self
         else:
             self.level = 0
             self.tried_packages = set()
@@ -240,9 +247,27 @@ class SBOMGeneratorStep(Container):
                 transient=True,
                 expand=True,
             )
-        self.command_output: Optional[bytes] = None
+        self._command_output: Optional[bytes] = None
         self.missing_files: List[str] = []
         self._task: Optional[TaskID] = None
+
+    @property
+    def command_output(self) -> Optional[bytes]:
+        return self._command_output
+
+    @command_output.setter
+    def command_output(self, value: bytes):
+        if value is None:
+            raise ValueError("command_output cannot be None")
+        elif self._command_output is not None and self._command_output != value:
+            raise ValueError("The command output can only be set once!")
+        self._command_output = value
+        if self.level == self.best_sbom.level and len(value) > len(self.best_sbom.command_output):
+            self.root._best_sbom = self
+
+    @property
+    def best_sbom(self) -> "SBOMGeneratorStep":
+        return self.root._best_sbom
 
     def _missing_files(self, container: Container, *paths: Path | str) -> Set[str]:
         to_check: Set[str] = {str(p) for p in paths}
@@ -297,7 +322,7 @@ class SBOMGeneratorStep(Container):
         raise PackageResolutionError(
             f"`{self.full_command}` exited with code {self.retval} having looked for missing"
             f" files {list(self.missing_files_without_duplicates)!r}, none of which are"
-            " satisfied by Ubuntu packages",
+            f" satisfied by {self.generator.cache.package_manager.NAME} packages",
             command_output=self.command_output,
         )
 
@@ -420,6 +445,15 @@ class SBOMGeneratorStep(Container):
         if not yielded:
             if last_error is not None:
                 raise last_error
+            elif self.level == 0:
+                raise PackageResolutionError(
+                    f"Could not find a feasible SBOM that satisfies all of the missing packages for "
+                    f"`{self.full_command}`. The most promising partial SBOM exited with code {self.best_sbom.retval} "
+                    f"having looked for missing files {list(self.best_sbom.missing_files_without_duplicates)!r}, none "
+                    f"of which are satisfied by {self.generator.cache.package_manager.NAME} packages",
+                    command_output=self.command_output,
+                    partial_sbom=self.best_sbom.sbom
+                )
             else:
                 self._register_infeasible()  # this always raises an exception
 

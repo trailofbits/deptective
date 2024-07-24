@@ -231,12 +231,15 @@ def main() -> int:
                      f"Run `apt-trace --list` for a list of available OS versions and architectures.")
     except SBOMGenerationError as e:
         logger.error(str(e))
-        if (
-            isinstance(e, PackageResolutionError)
-            and e.command_output is not None
-            and e.command_output
-        ):
-            if e.command_output_str:
+        if isinstance(e, PackageResolutionError):
+            if e.partial_sbom:
+                console.print(
+                   Panel(
+                       " ".join((f":floppy_disk: [bold italic]{p}[/bold italic]" for p in e.partial_sbom)),
+                       title="Most Promising Partial SBOM"
+                    )
+                )
+            if e.command_output is not None and e.command_output and e.command_output_str:
                 console.print(
                     Panel(
                         e.command_output_str,
