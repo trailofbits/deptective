@@ -228,7 +228,7 @@ class SBOMGeneratorStep(Container):
         self.generator: SBOMGenerator = generator
         self.retval: int = -1
         if parent is not None:
-            self.tried_packages: Set[str] = set(parent.tried_packages)
+            self.tried_packages: Set[str] = parent.tried_packages | parent.preinstall
             self._progress: ContainerProgress = parent._progress
         else:
             self.level = 0
