@@ -362,7 +362,16 @@ class SBOMGeneratorStep(Container):
                         logger.warning(str(e))
                         continue
 
-            self.missing_files.extend(self._missing_files(exe.container, *accessed_files))
+            new_missing_files = self._missing_files(exe.container, *accessed_files)
+            for path in new_missing_files:
+                if ".." in path:
+                    resolved = str(Path(path).resolve())
+                    if resolved != path:
+                        # the path contains something like "/foo/bar/../baz",
+                        # so resolve it to /foo/baz
+                        self.missing_files.append(resolved)
+                        continue
+                self.missing_files.append(path)
         if self.retval == 0:
             yield SBOM()
             return
@@ -451,7 +460,7 @@ class SBOMGeneratorStep(Container):
                     f"`{self.full_command}`. The most promising partial SBOM exited with code {self.best_sbom.retval} "
                     f"having looked for missing files {list(self.best_sbom.missing_files_without_duplicates)!r}, none "
                     f"of which are satisfied by {self.generator.cache.package_manager.NAME} packages",
-                    command_output=self.command_output,
+                    command_output=self.best_sbom.command_output,
                     partial_sbom=self.best_sbom.sbom
                 )
             else:
