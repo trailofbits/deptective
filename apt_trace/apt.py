@@ -106,6 +106,8 @@ class Apt(PackageManager):
             f"Downloading {contents_url}\n"
             "This is a one-time download and may take a few minutes."
         )
+        # for some reason, Ubuntu doesn't include /usr/bin/cc in its package database:
+        yield "usr/bin/cc", frozenset({"gcc", "g++", "clang"})
         contents_pattern = re.compile(r"(\S+)\s+(\S.*)")
         try:
             with DownloadWithProgress(contents_url) as p, gzip.open(p, "rb") as gz:

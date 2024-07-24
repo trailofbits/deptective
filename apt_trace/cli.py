@@ -81,6 +81,9 @@ def main() -> int:
                         help=f"the architecture in which to resolve packages (default={default_arch})")
     parser.add_argument("--rebuild", action="store_true", help="forces a rebuild of the package cache "
                                                                "(requires an Internet connection)")
+    parser.add_argument("--search", "-s", action="store_true",
+                        help="instead of treating the final argument as a command to run, treat it as a path and list "
+                             "all packages that provide that file")
     results_group = parser.add_mutually_exclusive_group()
     results_group.add_argument(
         "--num-results",
@@ -154,7 +157,7 @@ def main() -> int:
         if not args.command:
             return 0
 
-    if not args.command:
+    if not args.command and not args.rebuild:
         parser.print_help()
         return 1
 
@@ -166,12 +169,31 @@ def main() -> int:
 
     cache = SQLCache.from_disk(package_manager)
 
+    if args.rebuild and not args.command:
+        return 0
+
     results: List[SBOM] = []
 
     # rich has a tendency to gobble stdout, so save the old one before proceeding:
     old_stdout = sys.stdout
 
     try:
+        if args.search:
+            success = True
+            for path in args.command:
+                pkgs = cache[path]
+                if not pkgs:
+                    logger.info(f"No packages found that provide {path}")
+                    success = False
+                    continue
+                logger.info(
+                    dedent(
+                        f"[bold white]Packages providing[/bold white] {path}: "
+                        f"{'[gray],[/gray] '.join(pkgs)}"
+                    ),
+                    extra={"markup": True},
+                )
+            return success
         for i, sbom in enumerate(
             SBOMGenerator(cache=cache, console=console).main(args.command[0], *args.command[1:])
         ):
