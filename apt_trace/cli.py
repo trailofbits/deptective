@@ -26,6 +26,7 @@ from .exceptions import SBOMGenerationError, PackageDatabaseNotFoundError
 from .package_manager import PackageManager, PackagingConfig
 
 logger = logging.getLogger(__name__)
+logging.getLogger("docker").setLevel(logging.WARNING)
 logging.getLogger("requests").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 

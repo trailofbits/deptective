@@ -360,24 +360,24 @@ class SBOMGeneratorStep(Container):
                 f"`{self.full_command}` exited with code {self.retval} regardless of the"
                 f" install of package(s) {', '.join(self.preinstall)}"
             )
-        packages_to_try: List[str] = []
-        history: Set[str] = set()
-        for file in reversed(self.missing_files):
-            # reverse the missing files so we try the last missing files first
-            new_packages = (
-                set(self.generator.cache[file])
-                - self.tried_packages
-                - self.preinstall
-                - history
-            )
-            packages_to_try.extend(new_packages)
-            history |= new_packages
+        packages_to_try: Dict[str, tuple[int, int]] = {}
+        for i, file in enumerate(self.missing_files):
+            for possibility in self.generator.cache[file]:
+                if possibility in self.tried_packages or possibility in self.preinstall:
+                    # we already tried this package
+                    continue
+                elif possibility in packages_to_try:
+                    packages_to_try[possibility] = (packages_to_try[possibility][0] + 1, i)
+                else:
+                    packages_to_try[possibility] = (1, i)
         if not packages_to_try:
             self._register_infeasible()  # this always raises an exception
         yielded = False
         last_error: Optional[SBOMGenerationError] = None
         self._progress.update(self._task, total=len(packages_to_try))
-        for package in sorted(packages_to_try):
+        for _, _, package in sorted(
+                ((count, idx, name) for name, (count, idx) in packages_to_try.items()), reverse=True
+        ):
             try:
                 step = SBOMGeneratorStep(
                     generator=self.generator,
