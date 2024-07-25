@@ -22,7 +22,9 @@ import docker
 from docker.models.images import Image
 import randomname
 from rich.console import Console
+from rich.panel import Panel
 from rich.progress import Progress, MofNCompleteColumn, TaskID
+from rich.prompt import Confirm
 
 from .cache import Cache, CACHE_DIR
 from .containers import Container, ContainerProgress, DockerContainer
@@ -202,9 +204,36 @@ class SBOMGenerator:
 
     def main(self, command: str, *args: str) -> Iterator[SBOM]:
         with SBOMGeneratorStep(self, command, args) as step:
-            for sbom in step.find_feasible_sboms():
-                self.feasible.add(sbom)
-                yield sbom
+            yielded = False
+            try:
+                for sbom in step.find_feasible_sboms():
+                    self.feasible.add(sbom)
+                    yield sbom
+                    yielded = True
+            except (Exception, KeyboardInterrupt) as e:
+                if sys.stdout.isatty() and not yielded and step.best_sbom is not None:
+                    logger.error(str(e))
+                    if Confirm.ask(f"Would you like to see the most promising SBOM before the error is handled?"):
+                        self.console.print(
+                            Panel(
+                                " ".join((f":floppy_disk: [bold italic]{p}[/bold italic]"
+                                          for p in step.best_sbom.sbom)),
+                                title="Most Promising Partial SBOM"
+                            )
+                        )
+                        if step.best_sbom.command_output:
+                            try:
+                                cmd_output_str = step.best_sbom.command_output.decode("utf-8")
+                            except UnicodeDecodeError:
+                                cmd_output_str = repr(step.best_sbom.command_output)[2:-1]
+                            if cmd_output_str:
+                                self.console.print(
+                                    Panel(
+                                        cmd_output_str,
+                                        title=f"`{command} {' '.join(args)}` Output",
+                                    )
+                                )
+                raise e
 
 
 class SBOMGeneratorStep(Container):
