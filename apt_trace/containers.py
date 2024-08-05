@@ -1,21 +1,18 @@
-import logging
 import functools
-from pathlib import Path
+import logging
 import sys
+from pathlib import Path
 from typing import Dict, List, Literal, Optional, Self, TypeVar, Union
 
 import docker
+import randomname
 import requests.exceptions
 from docker.client import DockerClient
 from docker.errors import NotFound
 from docker.models.containers import Container as DockerContainer
 from docker.models.images import Image
-
-import randomname
-
 from rich.panel import Panel
 from rich.progress import Progress
-
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +163,9 @@ class Container:
     def setup_image(self, container: DockerContainer):
         pass
 
-    def files_exist(self, *paths: Path | str, progress: Progress | None = None) -> dict[str, bool]:
+    def files_exist(
+        self, *paths: Path | str, progress: Progress | None = None
+    ) -> dict[str, bool]:
         paths = {str(p) for p in paths}
         ret: dict[str, bool] = {}
         if not paths:
@@ -177,16 +176,23 @@ class Container:
                 if progress is None:
                     iterator = iter(paths)
                 else:
-                    iterator = progress.track(paths, description="checking for missing files…")
+                    iterator = progress.track(
+                        paths, description="checking for missing files…"
+                    )
                 for path in iterator:
-                    ret[path] = container.exec_run(
-                        ["ls", path], workdir="/workdir", stdout=False, stderr=False
-                    ).exit_code == 0
+                    ret[path] = (
+                        container.exec_run(
+                            ["ls", path], workdir="/workdir", stdout=False, stderr=False
+                        ).exit_code
+                        == 0
+                    )
             finally:
                 try:
                     container.stop()
                     container.remove(force=True)
-                    logger.debug(f"Waiting for container {container.id} to be removed...")
+                    logger.debug(
+                        f"Waiting for container {container.id} to be removed..."
+                    )
                     container.wait(condition="removed")
                 except (NotFound, requests.exceptions.Timeout):
                     pass
@@ -239,7 +245,8 @@ class Container:
         self.__enter__()
         try:
             return Execution(
-                self, self.create(command=command, workdir=workdir, entrypoint=entrypoint)
+                self,
+                self.create(command=command, workdir=workdir, entrypoint=entrypoint),
             )  # this calls self.__exit__(...) when it is complete
         except RuntimeError as e:
             self.__exit__(type(e), e, None)
@@ -342,9 +349,7 @@ class ContainerProgress(Progress):
         yield self.make_tasks_table(self.tasks)
         if self.execution is not None:
             lines: List[str] = []
-            for line in self.execution.logs(scrollback=self._scrollback).split(
-                b"\n"
-            ):
+            for line in self.execution.logs(scrollback=self._scrollback).split(b"\n"):
                 try:
                     lines.append(line.decode("utf-8"))
                 except UnicodeDecodeError:

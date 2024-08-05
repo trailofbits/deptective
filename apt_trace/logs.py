@@ -1,9 +1,9 @@
 import io
+import urllib.request
 from logging import Handler, Logger, getLogger
 from pathlib import Path
 from typing import BinaryIO, Iterator, Optional
 from urllib.parse import urlparse
-import urllib.request
 
 from rich.console import Console
 from rich.logging import RichHandler
@@ -11,12 +11,11 @@ from rich.progress import (
     BarColumn,
     DownloadColumn,
     Progress,
+    TaskID,
     TextColumn,
     TimeRemainingColumn,
     TransferSpeedColumn,
-    TaskID,
 )
-
 
 _logger = getLogger(__name__)
 

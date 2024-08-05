@@ -1,11 +1,12 @@
 import argparse
-import platform
-from collections import defaultdict
 import logging
-import requests
+import platform
 import sys
+from collections import defaultdict
+from textwrap import dedent
 from typing import List
 
+import requests
 from docker.errors import DockerException
 from rich import traceback
 from rich.console import Console
@@ -13,16 +14,14 @@ from rich.logging import RichHandler
 from rich.panel import Panel
 from rich.table import Table
 
-from textwrap import dedent
-
 from . import apt
 from .cache import SQLCache
 from .dependencies import (
-    PackageResolutionError,
     SBOM,
+    PackageResolutionError,
     SBOMGenerator,
 )
-from .exceptions import SBOMGenerationError, PackageDatabaseNotFoundError
+from .exceptions import PackageDatabaseNotFoundError, SBOMGenerationError
 from .package_manager import PackageManager, PackagingConfig
 
 logger = logging.getLogger(__name__)
@@ -42,16 +41,22 @@ def list_supported_configurations(console: Console | None = None):
     table.add_column("Release", style="green")
     table.add_column("Architectures", justify="right", style="blue")
 
-    rows: dict[str, dict[tuple[str, str], set[str]]] = defaultdict(lambda: defaultdict(set))
+    rows: dict[str, dict[tuple[str, str], set[str]]] = defaultdict(
+        lambda: defaultdict(set)
+    )
 
     for manager in PackageManager.MANAGERS_BY_NAME.values():
         for version in manager.versions():
-            rows[version.NAME][(version.config.os, version.config.os_version)].add(version.config.arch)
+            rows[version.NAME][(version.config.os, version.config.os_version)].add(
+                version.config.arch
+            )
 
     for manager_name in sorted(rows.keys()):
         row = rows[manager_name]
         for os, os_version in sorted(row.keys()):
-            table.add_row(manager_name, os, os_version, ", ".join(sorted(row[(os, os_version)])))
+            table.add_row(
+                manager_name, os, os_version, ", ".join(sorted(row[(os, os_version)]))
+            )
 
     console.print(table)
 
@@ -68,22 +73,53 @@ def main() -> int:
         default_arch = local_config.arch
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--list", "-l", action="store_true",
-                        help="list available OS versions and package managers for package resolution")
-    parser.add_argument("--package-manager", "-p", choices=PackageManager.MANAGERS_BY_NAME.keys(),
-                        default="apt", help="the package manager to use (default=apt)")
-    parser.add_argument("--operating-system", "-os", type=str, default=default_os,
-                        help=f"the operating system in which to resolve packages (default={default_os})")
-    parser.add_argument("--release", "-r", type=str, default=default_release,
-                        help=f"the release of the operating system in which to resolve packages "
-                             f"(default={default_release})")
-    parser.add_argument("--arch", type=str, default=default_arch,
-                        help=f"the architecture in which to resolve packages (default={default_arch})")
-    parser.add_argument("--rebuild", action="store_true", help="forces a rebuild of the package cache "
-                                                               "(requires an Internet connection)")
-    parser.add_argument("--search", "-s", action="store_true",
-                        help="instead of treating the final argument as a command to run, treat it as a path and list "
-                             "all packages that provide that file")
+    parser.add_argument(
+        "--list",
+        "-l",
+        action="store_true",
+        help="list available OS versions and package managers for package resolution",
+    )
+    parser.add_argument(
+        "--package-manager",
+        "-p",
+        choices=PackageManager.MANAGERS_BY_NAME.keys(),
+        default="apt",
+        help="the package manager to use (default=apt)",
+    )
+    parser.add_argument(
+        "--operating-system",
+        "-os",
+        type=str,
+        default=default_os,
+        help=f"the operating system in which to resolve packages (default={default_os})",
+    )
+    parser.add_argument(
+        "--release",
+        "-r",
+        type=str,
+        default=default_release,
+        help=f"the release of the operating system in which to resolve packages "
+        f"(default={default_release})",
+    )
+    parser.add_argument(
+        "--arch",
+        type=str,
+        default=default_arch,
+        help=f"the architecture in which to resolve packages (default={default_arch})",
+    )
+    parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="forces a rebuild of the package cache "
+        "(requires an Internet connection)",
+    )
+    parser.add_argument(
+        "--search",
+        "-s",
+        action="store_true",
+        help="instead of treating the final argument as a command to run, treat it as a path and list "
+        "all packages that provide that file",
+    )
     results_group = parser.add_mutually_exclusive_group()
     results_group.add_argument(
         "--num-results",
@@ -152,8 +188,10 @@ def main() -> int:
     if args.list:
         list_supported_configurations(console)
         console.print("\n")
-        console.print("Use the `--package-manager`, `--operating-system`, `--release`, and `--arch` options to specify "
-                      "your desired runtime environment.\n")
+        console.print(
+            "Use the `--package-manager`, `--operating-system`, `--release`, and `--arch` options to specify "
+            "your desired runtime environment.\n"
+        )
         if not args.command:
             return 0
 
@@ -162,7 +200,9 @@ def main() -> int:
         return 1
 
     package_manager = PackageManager.MANAGERS_BY_NAME[args.package_manager](
-        PackagingConfig(os=args.operating_system, os_version=args.release, arch=args.arch)
+        PackagingConfig(
+            os=args.operating_system, os_version=args.release, arch=args.arch
+        )
     )
     if args.rebuild and SQLCache.exists(package_manager):
         SQLCache.path(package_manager).unlink()
@@ -195,7 +235,9 @@ def main() -> int:
                 )
             return success
         for i, sbom in enumerate(
-            SBOMGenerator(cache=cache, console=console).main(args.command[0], *args.command[1:])
+            SBOMGenerator(cache=cache, console=console).main(
+                args.command[0], *args.command[1:]
+            )
         ):
             if not old_stdout.isatty():
                 old_stdout.write(str(sbom))
@@ -227,19 +269,30 @@ def main() -> int:
         logger.error(f"Timed out while waiting for a response: {e!s}")
         return 1
     except PackageDatabaseNotFoundError as e:
-        logger.error(f"{e!s}\nPlease make sure that this OS version is still maintained.\n"
-                     f"Run `apt-trace --list` for a list of available OS versions and architectures.")
+        logger.error(
+            f"{e!s}\nPlease make sure that this OS version is still maintained.\n"
+            f"Run `apt-trace --list` for a list of available OS versions and architectures."
+        )
     except SBOMGenerationError as e:
         logger.error(str(e))
         if isinstance(e, PackageResolutionError):
             if e.partial_sbom:
                 console.print(
-                   Panel(
-                       " ".join((f":floppy_disk: [bold italic]{p}[/bold italic]" for p in e.partial_sbom)),
-                       title="Most Promising Partial SBOM"
+                    Panel(
+                        " ".join(
+                            (
+                                f":floppy_disk: [bold italic]{p}[/bold italic]"
+                                for p in e.partial_sbom
+                            )
+                        ),
+                        title="Most Promising Partial SBOM",
                     )
                 )
-            if e.command_output is not None and e.command_output and e.command_output_str:
+            if (
+                e.command_output is not None
+                and e.command_output
+                and e.command_output_str
+            ):
                 console.print(
                     Panel(
                         e.command_output_str,

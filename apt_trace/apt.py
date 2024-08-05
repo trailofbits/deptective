@@ -1,16 +1,16 @@
 import functools
 import gzip
-from html.parser import HTMLParser
 import logging
-from pathlib import Path
 import re
+from html.parser import HTMLParser
+from pathlib import Path
 from typing import (
     FrozenSet,
     Iterator,
-    Union,
     Tuple,
     Type,
     TypeVar,
+    Union,
 )
 from urllib.error import HTTPError
 from urllib.request import urlopen
@@ -19,7 +19,6 @@ from .containers import DockerContainer
 from .exceptions import PackageDatabaseNotFoundError, PackageResolutionError
 from .logs import DownloadWithProgress, iterative_readlines
 from .package_manager import PackageManager, PackagingConfig
-
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +67,7 @@ class Apt(PackageManager):
     def install(self, container: DockerContainer, *packages: str) -> Tuple[int, bytes]:
         if not packages:
             return 0, b""
-        return container.exec_run(
-            f"apt-get -y install {' '.join(packages)}"
-        )
+        return container.exec_run(f"apt-get -y install {' '.join(packages)}")
 
     @classmethod
     def versions(cls: Type[T]) -> Iterator[T]:
@@ -87,12 +84,14 @@ class Apt(PackageManager):
             sub_parser = UbuntuDistParser()
             sub_parser.feed(sub_data.decode("utf-8"))
             for contents in sub_parser.contents:
-                arch = contents[len("Contents-"):-len(".gz")]
-                yield cls(PackagingConfig(
-                    os="ubuntu",
-                    os_version=subdir[:-1],
-                    arch=arch,
-                ))
+                arch = contents[len("Contents-") : -len(".gz")]
+                yield cls(
+                    PackagingConfig(
+                        os="ubuntu",
+                        os_version=subdir[:-1],
+                        arch=arch,
+                    )
+                )
 
     def iter_packages(self) -> Iterator[Tuple[str, FrozenSet[str]]]:
         """
@@ -125,14 +124,18 @@ class Apt(PackageManager):
             error = e
         if error is not None:
             if error.code == 404:
-                raise AptDatabaseNotFoundError(f"Received an HTTP 404 error when trying to download the package "
-                                               f"database for "
-                                               f"{self.config.os}:{self.config.os_version}-{self.config.arch} from "
-                                               f"{contents_url}")
+                raise AptDatabaseNotFoundError(
+                    f"Received an HTTP 404 error when trying to download the package "
+                    f"database for "
+                    f"{self.config.os}:{self.config.os_version}-{self.config.arch} from "
+                    f"{contents_url}"
+                )
             else:
-                raise AptResolutionError(f"Error trying to download the package database for "
-                                         f"{self.config.os}:{self.config.os_version}-{self.config.arch} from "
-                                         f"{contents_url}: {error!s}")
+                raise AptResolutionError(
+                    f"Error trying to download the package database for "
+                    f"{self.config.os}:{self.config.os_version}-{self.config.arch} from "
+                    f"{contents_url}: {error!s}"
+                )
 
     def dockerfile(self) -> str:
         return f"""FROM {self.config.os}:{self.config.os_version} AS builder

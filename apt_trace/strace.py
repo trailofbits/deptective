@@ -1,6 +1,6 @@
+import re
 from functools import wraps
 from logging import getLogger
-import re
 from typing import Callable, Iterator
 
 logger = getLogger(__name__)
@@ -34,14 +34,23 @@ class Arg:
         return hash(self.value)
 
     def __eq__(self, other):
-        return (isinstance(other, Arg) and self.value == other.value and self.quoted == other.quoted) or \
-                isinstance(other, str) and self.value == other
+        return (
+            (
+                isinstance(other, Arg)
+                and self.value == other.value
+                and self.quoted == other.quoted
+            )
+            or isinstance(other, str)
+            and self.value == other
+        )
 
     def __str__(self):
         return self.value
 
     def __repr__(self):
-        return f"{self.__class__.__name__}(value={self.value!r}, quoted={self.quoted!r})"
+        return (
+            f"{self.__class__.__name__}(value={self.value!r}, quoted={self.quoted!r})"
+        )
 
 
 class ListArg(Arg):
@@ -85,13 +94,17 @@ class ParsingContext:
                 what_expected = repr(any_of)
             else:
                 what_expected = ", ".join(map(repr, any_of[:-1]))
-                what_expected = f"{what_expected}{['', ','][len(any_of) > 2]} or {any_of[-1]}"
-            raise ParseError(f"Expected {what_expected} but instead found {what_found} at offset {self.offset} of "
-                             f"{self.text!r}")
+                what_expected = (
+                    f"{what_expected}{['', ','][len(any_of) > 2]} or {any_of[-1]}"
+                )
+            raise ParseError(
+                f"Expected {what_expected} but instead found {what_found} at offset {self.offset} of "
+                f"{self.text!r}"
+            )
         self.offset += 1
         return c
 
-    def __enter__(self) -> 'ParsingContext':
+    def __enter__(self) -> "ParsingContext":
         ret = ParsingContext(self.text, self.offset)
         self._sub_contexts.append(ret)
         return ret
@@ -112,11 +125,11 @@ class ParsingContext:
             return None
 
     def lstrip(self):
-        while self.peek() in (' ', '\t'):
+        while self.peek() in (" ", "\t"):
             self.offset += 1
 
     def peek(self, n: int = 1) -> str:
-        return self.text[self.offset:self.offset + n]
+        return self.text[self.offset : self.offset + n]
 
     def next(self) -> str:
         ret = self.peek()
@@ -131,7 +144,9 @@ class ParsingContext:
         return self.text
 
 
-def production(func: Callable[[ParsingContext], Arg]) -> Callable[[str | ParsingContext], Arg]:
+def production(
+    func: Callable[[ParsingContext], Arg],
+) -> Callable[[str | ParsingContext], Arg]:
     @wraps(func)
     def wrapper(text: str | ParsingContext) -> Arg:
         if isinstance(text, str):
@@ -142,15 +157,7 @@ def production(func: Callable[[ParsingContext], Arg]) -> Callable[[str | Parsing
     return wrapper
 
 
-escapes = {
-    "n": "\n",
-    "t": "\t",
-    "b": "\b",
-    "r": "\r",
-    "\\": "\\",
-    '"': '"',
-    "'": "'"
-}
+escapes = {"n": "\n", "t": "\t", "b": "\b", "r": "\r", "\\": "\\", '"': '"', "'": "'"}
 
 
 @production
@@ -158,7 +165,9 @@ def parse_escape(text: ParsingContext) -> Arg:
     text.expect("\\")
     c = text.next()
     if c not in escapes:
-        logger.warning(f"Invalid escape \"\\{c!s}\" in {str(text)!r} at offset {text.offset-1}")
+        logger.warning(
+            f'Invalid escape "\\{c!s}" in {str(text)!r} at offset {text.offset-1}'
+        )
         return Arg(c)
     else:
         return Arg(escapes[c])
@@ -185,7 +194,9 @@ def parse_quoted_string(text: ParsingContext) -> Arg:
         if c == quote_char:
             break
         elif c == "":
-            raise EndOfStringError(f"Reached the end of the string {str(text)!r} while searching for {quote_char!r}")
+            raise EndOfStringError(
+                f"Reached the end of the string {str(text)!r} while searching for {quote_char!r}"
+            )
         elif c == "\\":
             text.seek(text.tell() - 1)
             c = parse_escape(text)
@@ -241,7 +252,9 @@ def parse_syscall_arg(text: ParsingContext) -> Arg:
             text.offset -= 1
             break
         elif c in ("'", '"'):
-            raise ParseError(f"Unexpected quotation mark in {text.text!r} at offset {text.offset - 1}")
+            raise ParseError(
+                f"Unexpected quotation mark in {text.text!r} at offset {text.offset - 1}"
+            )
         else:
             arg = f"{arg}{c}"
 
@@ -270,15 +283,13 @@ def parse_syscall_args(args: str | ParsingContext) -> Iterator[Arg]:
 
 strace_pattern = re.compile(
     r"\s*(\d*\s+)?(?P<syscall>.+)\((?P<args>[^)]+)\)\s*=\s*(?P<retval>-?\d+).*",
-    flags=re.MULTILINE
+    flags=re.MULTILINE,
 )
 strace_ignore_pattern = re.compile(
-    r".*?(\+\+\+\s*exited with \d+\s*\+\+\+|---\s*SIGCHLD).*",
-    flags=re.MULTILINE
+    r".*?(\+\+\+\s*exited with \d+\s*\+\+\+|---\s*SIGCHLD).*", flags=re.MULTILINE
 )
 strace_resumed_pattern = re.compile(
-    r".*?<\s*...\s*(?P<syscall>\S+)\s+resumed>(?P<remainder>.*)$",
-    flags=re.MULTILINE
+    r".*?<\s*...\s*(?P<syscall>\S+)\s+resumed>(?P<remainder>.*)$", flags=re.MULTILINE
 )
 
 
@@ -291,7 +302,11 @@ def parse_strace_log_line(line: str) -> tuple[str | None, Iterator[Arg], int]:
 
     m = strace_pattern.match(line)
     if m:
-        return m.group("syscall"), parse_syscall_args(m.group("args")), int(m.group("retval"))
+        return (
+            m.group("syscall"),
+            parse_syscall_args(m.group("args")),
+            int(m.group("retval")),
+        )
     elif not strace_ignore_pattern.match(line):
         raise ParseError(f"Could not parse strace output: {line!r}")
     else:

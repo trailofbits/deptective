@@ -1,10 +1,10 @@
 import os
+import sys
+import tarfile
 import time
 from io import BytesIO
 from logging import DEBUG, getLogger
 from pathlib import Path
-import sys
-import tarfile
 from tempfile import TemporaryDirectory
 from typing import (
     Dict,
@@ -19,18 +19,17 @@ from typing import (
 )
 
 import docker
-from docker.models.images import Image
 import randomname
+from docker.models.images import Image
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, MofNCompleteColumn, TaskID
+from rich.progress import MofNCompleteColumn, Progress, TaskID
 from rich.prompt import Confirm
 
-from .cache import Cache, CACHE_DIR
+from .cache import CACHE_DIR, Cache
 from .containers import Container, ContainerProgress, DockerContainer
 from .exceptions import SBOMGenerationError
 from .strace import ParseError, lazy_parse_paths
-
 
 logger = getLogger(__name__)
 
@@ -83,7 +82,12 @@ class NonZeroExit(SBOMGenerationError):
 
 
 class PackageResolutionError(SBOMGenerationError):
-    def __init__(self, message: str, command_output: bytes | None = None, partial_sbom: SBOM | None = None):
+    def __init__(
+        self,
+        message: str,
+        command_output: bytes | None = None,
+        partial_sbom: SBOM | None = None,
+    ):
         super().__init__(message)
         self.command_output: bytes | None = command_output
         self.partial_sbom: SBOM | None = partial_sbom
@@ -110,6 +114,7 @@ class IrrelevantPackageInstall(SBOMGenerationError):
 def build_context(root_path: Path | str, dockerfile: str) -> BytesIO:
     fh = BytesIO()
     with tarfile.open(fileobj=fh, mode="w") as tar:
+
         def dockerfile_filter(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
             if info.name in ("Dockerfile", "./Dockerfile"):
                 return None
@@ -164,9 +169,7 @@ class SBOMGenerator:
         pm = self.cache.package_manager
         dockerfile = pm.dockerfile()
         pm_suffix = f"{pm.NAME}-{pm.config.os}-{pm.config.os_version}-{pm.config.arch}"
-        cached_dockerfile_path = CACHE_DIR / (
-            f"Dockerfile-{pm_suffix}"
-        )
+        cached_dockerfile_path = CACHE_DIR / (f"Dockerfile-{pm_suffix}")
         image_name = f"trailofbits/apt-strace-{pm_suffix}"
         if not cached_dockerfile_path.exists():
             cached_content = ""
@@ -212,6 +215,7 @@ class SBOMGenerator:
                     yielded = True
             except (Exception, KeyboardInterrupt) as e:
                 import traceback
+
                 if sys.stdin.isatty() and not yielded:
                     if not isinstance(e, KeyboardInterrupt):
                         logger.error(str(e))
@@ -221,16 +225,24 @@ class SBOMGenerator:
                     if Confirm.ask(prompt, console=self.console):
                         self.console.print(
                             Panel(
-                                " ".join((f":floppy_disk: [bold italic]{p}[/bold italic]"
-                                          for p in step.best_sbom.sbom)),
-                                title="Most Promising Partial SBOM"
+                                " ".join(
+                                    (
+                                        f":floppy_disk: [bold italic]{p}[/bold italic]"
+                                        for p in step.best_sbom.sbom
+                                    )
+                                ),
+                                title="Most Promising Partial SBOM",
                             )
                         )
                         if step.best_sbom.command_output:
                             try:
-                                cmd_output_str = step.best_sbom.command_output.decode("utf-8")
+                                cmd_output_str = step.best_sbom.command_output.decode(
+                                    "utf-8"
+                                )
                             except UnicodeDecodeError:
-                                cmd_output_str = repr(step.best_sbom.command_output)[2:-1]
+                                cmd_output_str = repr(step.best_sbom.command_output)[
+                                    2:-1
+                                ]
                             if cmd_output_str:
                                 self.console.print(
                                     Panel(
@@ -296,7 +308,9 @@ class SBOMGeneratorStep(Container):
         elif self._command_output is not None and self._command_output != value:
             raise ValueError("The command output can only be set once!")
         self._command_output = value
-        if self.level == self.best_sbom.level and len(value) > len(self.best_sbom.command_output):
+        if self.level == self.best_sbom.level and len(value) > len(
+            self.best_sbom.command_output
+        ):
             self.root._best_sbom = self
 
     @property
@@ -308,12 +322,15 @@ class SBOMGeneratorStep(Container):
         progress = Progress(transient=True, console=self._progress.console)
         self._progress.file_progress = progress
         try:
-            file_existence = container.files_exist(*(
-                    to_check - set(self.missing_files)
-            ), progress=progress)
+            file_existence = container.files_exist(
+                *(to_check - set(self.missing_files)), progress=progress
+            )
             if logger.level <= DEBUG:
                 if file_existence:
-                    af = (f"\n{p} ({['NOT FOUND', 'EXISTS'][exists]})" for p, exists in file_existence.items())
+                    af = (
+                        f"\n{p} ({['NOT FOUND', 'EXISTS'][exists]})"
+                        for p, exists in file_existence.items()
+                    )
                     logger.debug(f"Accessed files: {''.join(af)}")
                 else:
                     logger.debug("No files accessed.")
@@ -435,7 +452,10 @@ class SBOMGeneratorStep(Container):
                     # we already tried this package
                     continue
                 elif possibility in packages_to_try:
-                    packages_to_try[possibility] = (packages_to_try[possibility][0] + 1, i)
+                    packages_to_try[possibility] = (
+                        packages_to_try[possibility][0] + 1,
+                        i,
+                    )
                 else:
                     packages_to_try[possibility] = (1, i)
         if not packages_to_try:
@@ -444,7 +464,8 @@ class SBOMGeneratorStep(Container):
         last_error: Optional[SBOMGenerationError] = None
         self._progress.update(self._task, total=len(packages_to_try))
         for _, _, package in sorted(
-                ((count, idx, name) for name, (count, idx) in packages_to_try.items()), reverse=True
+            ((count, idx, name) for name, (count, idx) in packages_to_try.items()),
+            reverse=True,
         ):
             try:
                 step = SBOMGeneratorStep(
@@ -495,7 +516,7 @@ class SBOMGeneratorStep(Container):
                     f"having looked for missing files {list(self.best_sbom.missing_files_without_duplicates)!r}, none "
                     f"of which are satisfied by {self.generator.cache.package_manager.NAME} packages",
                     command_output=self.best_sbom.command_output,
-                    partial_sbom=self.best_sbom.sbom
+                    partial_sbom=self.best_sbom.sbom,
                 )
             else:
                 self._register_infeasible()  # this always raises an exception
@@ -517,7 +538,9 @@ class SBOMGeneratorStep(Container):
                     "Error copying the source files to /workdir in the Docker image:"
                     f" {output}"
                 )
-            logger.info(f"Updating {self.generator.cache.package_manager.NAME} sources...")
+            logger.info(
+                f"Updating {self.generator.cache.package_manager.NAME} sources..."
+            )
             retval, output = self.generator.cache.package_manager.update(container)
             if retval != 0:
                 raise ValueError(f"Error updating packages: {output}")
@@ -531,14 +554,18 @@ class SBOMGeneratorStep(Container):
                 # determine the $PATH inside the container:
                 retval, output = container.exec_run("printenv PATH")
                 if retval != 0:
-                    raise ValueError(f"Error determining the $PATH inside of the container: {output}")
+                    raise ValueError(
+                        f"Error determining the $PATH inside of the container: {output}"
+                    )
                 for path in (p.strip() for p in output.decode("utf-8").split(":")):
                     self.missing_files.append(str(Path(path) / self.command))
         if self.preinstall:
             logger.info(
                 f"Installing {', '.join(self.preinstall)} into {container.short_id}..."
             )
-            retval, output = self.generator.cache.package_manager.install(container, *self.preinstall)
+            retval, output = self.generator.cache.package_manager.install(
+                container, *self.preinstall
+            )
             if retval != 0:
                 raise PreinstallError(
                     f"Error installing {' '.join(self.preinstall)}: {output}"

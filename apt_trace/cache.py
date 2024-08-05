@@ -1,6 +1,6 @@
+import sqlite3
 from abc import ABC, abstractmethod
 from pathlib import Path
-import sqlite3
 from typing import FrozenSet, Iterable, Iterator, Set, Tuple, Type, TypeVar, Union
 
 from appdirs import AppDirs
@@ -67,8 +67,11 @@ class Cache(ABC):
         raise NotImplementedError()
 
     @classmethod
-    def from_iterable(cls: Type[T], package_manager: PackageManager,
-                      packages: Iterable[Tuple[str, Iterable[str]]]) -> T:
+    def from_iterable(
+        cls: Type[T],
+        package_manager: PackageManager,
+        packages: Iterable[Tuple[str, Iterable[str]]],
+    ) -> T:
         """
         Imports the iterable `packages` into the native cache format, returning a new
         cache object.
@@ -119,8 +122,11 @@ class SQLCache(Cache, ABC):
         return cls(package_manager, conn=sqlite3.connect(str(db_path)))
 
     @classmethod
-    def from_iterable(cls: Type[T], package_manager: PackageManager,
-                      packages: Iterable[Tuple[str, Iterable[str]]]) -> T:
+    def from_iterable(
+        cls: Type[T],
+        package_manager: PackageManager,
+        packages: Iterable[Tuple[str, Iterable[str]]],
+    ) -> T:
         ret = cls(package_manager, conn=sqlite3.connect(str(cls.path(package_manager))))
 
         try:
