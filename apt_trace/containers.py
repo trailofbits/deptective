@@ -28,6 +28,8 @@ class Execution:
         self.container: Container = container
         self.docker_container: DockerContainer = docker_container
         self._closed = False
+        self._output: bytes | None = None
+        self._exit_code: int | None = None
 
         logging_driver = docker_container.attrs["HostConfig"]["LogConfig"]["Type"]
 
@@ -42,26 +44,45 @@ class Execution:
         if self._closed:
             return True
 
-        # Refresh and check the container metadata.
-        self.docker_container.reload()
-        return self.docker_container.status == "exited"
+        try:
+            # Refresh and check the container metadata.
+            self.docker_container.reload()
+            if self.docker_container.status == "exited":
+                self.close()
+                return True
+        except NotFound:
+            # the container is not running
+            self.close()
+            return True
+        return False
 
     @functools.cached_property
     def exit_code(self) -> int:
-        return self.docker_container.wait()["StatusCode"]
+        """Blocks until the execution completes and returns its exit code."""
+        if self._exit_code is None:
+            try:
+                self._exit_code = self.docker_container.wait()["StatusCode"]
+            except NotFound:
+                # race condition: the container was closed by a different thread
+                # which should have set self._exit_code
+                pass
+            finally:
+                self.close()
+        return self._exit_code
 
-    @functools.cached_property
+    @property
     def output(self) -> bytes:
-        try:
-            # the following line blocks until the container's processes completes:
-            _ = self.exit_code
-            return self.docker_container.logs(stdout=True, stderr=True)
-        finally:
-            self.close()
+        """Blocks until the execution completes and returns its output."""
+        _ = self.exit_code
+        assert self._output is not None
+        return self._output
 
     def close(self):
         if self._closed:
-            raise ValueError("The container is already closed!")
+            return
+        self._closed = True
+        self._output = self.docker_container.logs(stdout=True, stderr=True, tail="all")
+        self._exit_code = self.docker_container.wait()["StatusCode"]
         try:
             self.docker_container.remove(force=True)
             logger.debug(
@@ -71,16 +92,19 @@ class Execution:
         except NotFound:
             logger.debug(f"Container {self.docker_container.id} was already removed")
         self.container.__exit__(None, None, None)
-        self._closed = True
 
     def logs(self, scrollback: int = -1) -> bytes:
-        if self._closed:
-            return b""
-        if scrollback < 0:
+        if self.done:
+            if scrollback < 0:
+                return self.output
+            else:
+                return self.output[-scrollback:]
+        elif scrollback < 0:
             tail: int | Literal["all"] = "all"
         else:
             tail = scrollback
-        return self.docker_container.logs(stdout=True, stderr=True, tail=tail)
+        self._output = self.docker_container.logs(stdout=True, stderr=True, tail=tail)
+        return self._output
 
 
 class Container:
@@ -310,28 +334,27 @@ class ContainerProgress(Progress):
     def file_progress(self, progress: Progress | None):
         if progress is not self._file_progress:
             self._file_progress = progress
+            if progress is None:
+                self.execution = None
             self.refresh()
 
     def get_renderables(self):
         yield self.make_tasks_table(self.tasks)
         if self.execution is not None:
-            if self.execution.done:
-                self.execution = None
-            else:
-                lines: List[str] = []
-                for line in self.execution.logs(scrollback=self._scrollback).split(
-                    b"\n"
-                ):
-                    try:
-                        lines.append(line.decode("utf-8"))
-                    except UnicodeDecodeError:
-                        lines.append(repr(line)[2:-1])
-                while lines and not lines[-1].strip():
-                    lines.pop()
-                yield Panel(
-                    "\n".join(lines),
-                    title=self._exec_title,
-                    subtitle=self._exec_subtitle,
-                )
+            lines: List[str] = []
+            for line in self.execution.logs(scrollback=self._scrollback).split(
+                b"\n"
+            ):
+                try:
+                    lines.append(line.decode("utf-8"))
+                except UnicodeDecodeError:
+                    lines.append(repr(line)[2:-1])
+            while lines and not lines[-1].strip():
+                lines.pop()
+            yield Panel(
+                "\n".join(lines),
+                title=self._exec_title,
+                subtitle=self._exec_subtitle,
+            )
         if self.file_progress is not None:
             yield self.file_progress

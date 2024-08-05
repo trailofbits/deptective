@@ -211,9 +211,14 @@ class SBOMGenerator:
                     yield sbom
                     yielded = True
             except (Exception, KeyboardInterrupt) as e:
-                if sys.stdout.isatty() and not yielded and step.best_sbom is not None:
-                    logger.error(str(e))
-                    if Confirm.ask(f"Would you like to see the most promising SBOM before the error is handled?"):
+                import traceback
+                if sys.stdin.isatty() and not yielded:
+                    if not isinstance(e, KeyboardInterrupt):
+                        logger.error(str(e))
+                        prompt = "Would you like to see the most promising SBOM before the error is handled?"
+                    else:
+                        prompt = "Would you like to see the most promising SBOM before exiting?"
+                    if Confirm.ask(prompt, console=self.console):
                         self.console.print(
                             Panel(
                                 " ".join((f":floppy_disk: [bold italic]{p}[/bold italic]"
