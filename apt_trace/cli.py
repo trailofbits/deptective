@@ -284,14 +284,23 @@ def main() -> int:
                 old_stdout.flush()
             else:
                 results.append(sbom)
-            logger.info(
-                dedent(
-                    f"""\
-            [bold white]Satisfying dependencies:[/bold white] {sbom.rich_str}
-            [bold white]Install with:[/bold white] apt-get install {' '.join(sbom)}"""
-                ),
-                extra={"markup": True},
-            )
+            if not sbom:
+                logger.info(
+                    dedent(
+                        "[bold white]The command executed successfully without the need for additional dependencies"
+                        "[/bold white]"
+                    ),
+                    extra={"markup": True},
+                )
+            else:
+                logger.info(
+                    dedent(
+                        f"""\
+                [bold white]Satisfying dependencies:[/bold white] {sbom.rich_str}
+                [bold white]Install with:[/bold white] apt-get install {' '.join(sbom)}"""
+                    ),
+                    extra={"markup": True},
+                )
 
             if not args.all and 0 < args.num_results and i == args.num_results - 1:
                 break
