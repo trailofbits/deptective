@@ -1,11 +1,13 @@
-FROM trailofbits/apt-strace
-
-RUN mkdir /apt_trace
+FROM trailofbits/apt-trace AS PREBUILD
 
 WORKDIR /apt_trace
 
-RUN apt-get install -y git autoconf automake libtool && git clone https://github.com/stedolan/jq.git && cd jq && autoreconf -i
+RUN apt-get update && apt-get install -y git autoconf automake libtool && git clone https://github.com/stedolan/jq.git && cd jq && autoreconf -i
+
+FROM trailofbits/apt-trace
+
+COPY --from=PREBUILD /apt_trace /
 
 WORKDIR /apt_trace/jq
 
-# RUN apt-strace ./configure --auto
+ENTRYPOINT ["apt-trace", "./configure", "--auto"]

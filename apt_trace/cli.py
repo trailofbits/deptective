@@ -29,6 +29,8 @@ logging.getLogger("docker").setLevel(logging.WARNING)
 logging.getLogger("requests").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
+DEFAULT_LINUX = ("ubuntu", "noble", "amd64")
+
 
 def list_supported_configurations(console: Console | None = None):
     if console is None:
@@ -61,11 +63,23 @@ def list_supported_configurations(console: Console | None = None):
     console.print(table)
 
 
+def load_cache(package_manager_name: str, operating_system: str, release: str, arch: str,
+               rebuild: bool = False) -> SQLCache:
+    mgr_class = PackageManager.MANAGERS_BY_NAME[package_manager_name]
+    package_manager = mgr_class(
+        PackagingConfig(
+            os=operating_system, os_version=release, arch=arch
+        )
+    )
+    if rebuild and SQLCache.exists(package_manager):
+        SQLCache.path(package_manager).unlink()
+
+    return SQLCache.from_disk(package_manager)
+
+
 def main() -> int:
     if platform.system().lower() != "linux":
-        default_os = "ubuntu"
-        default_release = "noble"
-        default_arch = "amd64"
+        default_os, default_release, default_arch = DEFAULT_LINUX
     else:
         local_config = PackagingConfig.get_local()
         default_os = local_config.os  # type: ignore
@@ -82,7 +96,7 @@ def main() -> int:
     parser.add_argument(
         "--package-manager",
         "-p",
-        choices=PackageManager.MANAGERS_BY_NAME.keys(),
+        choices=sorted(PackageManager.MANAGERS_BY_NAME.keys()),
         default="apt",
         help="the package manager to use (default=apt)",
     )
@@ -199,15 +213,40 @@ def main() -> int:
         parser.print_help()
         return 1
 
-    package_manager = PackageManager.MANAGERS_BY_NAME[args.package_manager](
-        PackagingConfig(
-            os=args.operating_system, os_version=args.release, arch=args.arch
+    try:
+        cache = load_cache(
+            args.package_manager,
+            args.operating_system,
+            args.release,
+            args.arch,
+            args.rebuild
         )
-    )
-    if args.rebuild and SQLCache.exists(package_manager):
-        SQLCache.path(package_manager).unlink()
-
-    cache = SQLCache.from_disk(package_manager)
+    except PackageDatabaseNotFoundError as e:
+        if args.operating_system == default_os and args.release == default_release and args.arch == default_arch \
+                and (default_os, default_release, default_arch) != DEFAULT_LINUX:
+            # we are running on linux that is not supported by the requested package manager
+            cache = None  # type: ignore
+        else:
+            logger.error(
+                f"{e!s}\nPlease make sure that this OS version is still maintained.\n"
+                f"Run `apt-trace --list` for a list of available OS versions and architectures."
+            )
+            return 1
+    if cache is None:
+        logger.warning(f"The system OS, release, and/or architecture is not compatible with {args.package_manager}; "
+                       f"trying {':'.join(DEFAULT_LINUX)} instead…")
+        try:
+            cache = load_cache(
+                args.package_manager,
+                *DEFAULT_LINUX,
+                rebuild=args.rebuild
+            )
+        except PackageDatabaseNotFoundError:
+            logger.error(
+                f"Could not find an OS version and architecture for {args.package_manager}.\n"
+                f"Run `apt-trace --list` for a list of available OS versions and architectures."
+            )
+            return 1
 
     if args.rebuild and not args.command:
         return 0
@@ -273,6 +312,7 @@ def main() -> int:
             f"{e!s}\nPlease make sure that this OS version is still maintained.\n"
             f"Run `apt-trace --list` for a list of available OS versions and architectures."
         )
+        return 1
     except SBOMGenerationError as e:
         logger.error(str(e))
         if isinstance(e, PackageResolutionError):

@@ -70,7 +70,10 @@ class Execution:
     def output(self) -> bytes:
         """Blocks until the execution completes and returns its output."""
         _ = self.exit_code
-        assert self._output is not None
+        if self._output is None:
+            self.close()
+            if self._output is None:
+                return b""
         return self._output
 
     def close(self):
@@ -78,7 +81,8 @@ class Execution:
             return
         self._closed = True
         self._output = self.docker_container.logs(stdout=True, stderr=True, tail="all")
-        self._exit_code = self.docker_container.wait()["StatusCode"]
+        if self._exit_code is None:
+            self._exit_code = self.docker_container.wait()["StatusCode"]
         try:
             self.docker_container.remove(force=True)
             logger.debug(
