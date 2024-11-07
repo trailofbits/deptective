@@ -259,7 +259,7 @@ def main() -> int:
     except DockerException as e:
         msg = str(e)
         if "ConnectionRefusedError" in msg or "Connection aborted" in msg:
-            logger.error(f"Could not connect to Docker. Is it running?")
+            logger.error("Could not connect to Docker. Is it running?")
         else:
             logger.error(f"An error occurred while communicating with Docker: {msg}")
         return 1

@@ -190,7 +190,7 @@ class SBOMGenerator:
                 return image
         # we need to build the image!
         logger.info(
-            f"Building the base Docker image…\n"
+            "Building the base Docker image…\n"
             "This is a one-time operation that may take a few minutes."
         )
         result = self.client.images.build(
