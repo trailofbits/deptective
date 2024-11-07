@@ -30,7 +30,7 @@ lint: $(NEEDS_VENV)
 	. $(VENV_BIN)/activate && \
 		black --check $(ALL_PY_SRCS) && \
 		ruff check $(ALL_PY_SRCS) && \
-		mypy $(PY_MODULE)
+		mypy --check-untyped-defs $(PY_MODULE)
 
 .PHONY: reformat
 reformat: $(NEEDS_VENV)

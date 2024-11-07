@@ -1,6 +1,7 @@
 import logging
 import signal
 from functools import partial, wraps
+from types import FrameType
 from typing import Any, Callable, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,7 @@ class SignalHandler:
     ):
         self.handling_signals: Tuple[int, ...] = tuple(signals)
         self.signals_received: List[Tuple[int, Any]] = []
-        self._old_handlers: Tuple[Callable[[int, Any], ...], ...] = ()
+        self._old_handlers: Tuple[Callable[[int, FrameType | None], Any], ...] = ()
 
     @property
     def handled_signals(self) -> bool:
@@ -27,7 +28,7 @@ class SignalHandler:
     def __enter__(self):
         self.signal_received = False
         self._old_handlers = tuple(
-            (signal.signal(sig, self.handler) for sig in self.handling_signals)
+            (signal.signal(sig, self.handler) for sig in self.handling_signals)  # type: ignore
         )
 
     def handler(self, sig, frame):

@@ -6,7 +6,7 @@ from collections import defaultdict
 from textwrap import dedent
 from typing import List
 
-import requests
+import requests  # type: ignore
 from docker.errors import DockerException
 from rich import traceback
 from rich.console import Console
@@ -68,9 +68,9 @@ def main() -> int:
         default_arch = "amd64"
     else:
         local_config = PackagingConfig.get_local()
-        default_os = local_config.os
-        default_release = local_config.os_version
-        default_arch = local_config.arch
+        default_os = local_config.os  # type: ignore
+        default_release = local_config.os_version  # type: ignore
+        default_arch = local_config.arch  # type: ignore
 
     parser = argparse.ArgumentParser()
     parser.add_argument(

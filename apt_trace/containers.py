@@ -5,7 +5,7 @@ from typing import Dict, List, Literal, Optional, Self, TypeVar, Union
 
 import docker
 import randomname
-import requests.exceptions
+import requests.exceptions  # type: ignore
 from docker.client import DockerClient
 from docker.errors import NotFound
 from docker.models.containers import Container as DockerContainer
@@ -64,7 +64,7 @@ class Execution:
                 pass
             finally:
                 self.close()
-        return self._exit_code
+        return self._exit_code  # type: ignore
 
     @property
     def output(self) -> bytes:
@@ -100,7 +100,7 @@ class Execution:
         else:
             tail = scrollback
         self._output = self.docker_container.logs(stdout=True, stderr=True, tail=tail)
-        return self._output
+        return self._output  # type: ignore
 
 
 class Container:
@@ -165,7 +165,7 @@ class Container:
     def files_exist(
         self, *paths: Path | str, progress: Progress | None = None
     ) -> dict[str, bool]:
-        paths = {str(p) for p in paths}
+        paths = {str(p) for p in paths}  # type: ignore
         ret: dict[str, bool] = {}
         if not paths:
             return ret
@@ -175,11 +175,11 @@ class Container:
                 if progress is None:
                     iterator = iter(paths)
                 else:
-                    iterator = progress.track(
+                    iterator = progress.track(  # type: ignore
                         paths, description="checking for missing files…"
                     )
                 for path in iterator:
-                    ret[path] = (
+                    ret[str(path)] = (
                         container.exec_run(
                             ["ls", path], workdir="/workdir", stdout=False, stderr=False
                         ).exit_code

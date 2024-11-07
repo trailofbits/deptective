@@ -78,7 +78,7 @@ class ParsingContext:
         self.offset = offset
 
     def expect(self, *any_of: str) -> str:
-        any_of = frozenset(any_of)
+        any_of = frozenset(any_of)  # type: ignore
         c = self.peek()
         if c == "":
             if not any_of:
@@ -87,7 +87,7 @@ class ParsingContext:
         else:
             what_found = repr(c)
         if c not in any_of:
-            any_of = sorted(any_of)
+            any_of = sorted(any_of)  # type: ignore
             if not any_of:
                 what_expected = "the end of the string"
             elif len(any_of) == 1:
@@ -181,6 +181,7 @@ def parse_comment(text: ParsingContext) -> Arg:
         text.offset += 1
     text.expect("*")
     text.expect("/")
+    return Arg("")
 
 
 @production
@@ -190,7 +191,7 @@ def parse_quoted_string(text: ParsingContext) -> Arg:
     parsed = ""
 
     while True:
-        c = text.next()
+        c: str | Arg = text.next()
         if c == quote_char:
             break
         elif c == "":

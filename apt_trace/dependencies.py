@@ -263,7 +263,7 @@ class SBOMGeneratorStep(Container):
         if parent is None:
             p: Union[Image, SBOMGeneratorStep] = generator.apt_strace_image
             self.root: SBOMGeneratorStep = self
-            self._best_sbom: SBOMGeneratorStep = self
+            self._best_sbom: SBOMGeneratorStep | None = self
         else:
             p = parent
             self.root = parent.root
@@ -306,14 +306,16 @@ class SBOMGeneratorStep(Container):
         elif self._command_output is not None and self._command_output != value:
             raise ValueError("The command output can only be set once!")
         self._command_output = value
-        if self.level == self.best_sbom.level and len(value) > len(
-            self.best_sbom.command_output
+        if (
+            self.level == self.best_sbom.level
+            and self.best_sbom.command_output is not None
+            and len(value) > len(self.best_sbom.command_output)
         ):
             self.root._best_sbom = self
 
     @property
     def best_sbom(self) -> "SBOMGeneratorStep":
-        return self.root._best_sbom
+        return self.root._best_sbom  # type: ignore
 
     def _missing_files(self, container: Container, *paths: Path | str) -> Set[str]:
         to_check: Set[str] = {str(p) for p in paths}
@@ -401,7 +403,7 @@ class SBOMGeneratorStep(Container):
             finally:
                 logger.debug(f"Ran, exit code {self.retval}")
             accessed_files: set[str] = set()
-            with open(self._logdir / "apt-trace.txt") as log:
+            with open(self._logdir / "apt-trace.txt") as log:  # type: ignore
                 for line in log:
                     try:
                         for arg in lazy_parse_paths(line):
@@ -460,7 +462,7 @@ class SBOMGeneratorStep(Container):
             self._register_infeasible()  # this always raises an exception
         yielded = False
         last_error: Optional[SBOMGenerationError] = None
-        self._progress.update(self._task, total=len(packages_to_try))
+        self._progress.update(self._task, total=len(packages_to_try))  # type: ignore
         for _, _, package in sorted(
             ((count, idx, name) for name, (count, idx) in packages_to_try.items()),
             reverse=True,
@@ -503,7 +505,7 @@ class SBOMGeneratorStep(Container):
                 )
                 continue
             finally:
-                self._progress.update(self._task, advance=1)
+                self._progress.update(self._task, advance=1)  # type: ignore
         if not yielded:
             if last_error is not None:
                 raise last_error
@@ -570,11 +572,11 @@ class SBOMGeneratorStep(Container):
                 )
 
     def _cleanup(self):
-        log_tmpdir = self._log_tmpdir
+        log_tmpdir: TemporaryDirectory = self._log_tmpdir  # type: ignore
         self._logdir = None
         self._log_tmpdir = None
         log_tmpdir.__exit__(None, None, None)
-        self._progress.remove_task(self._task)
+        self._progress.remove_task(self._task)  # type: ignore
         if self.level == 0:
             self._progress.__exit__(None, None, None)
 

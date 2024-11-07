@@ -60,7 +60,7 @@ class PackagingConfig:
                 local_release = version_codename
             elif version_id:
                 local_release = version_id
-        return cls(os=local_os, os_version=local_release, arch=arch)
+        return cls(os=local_os, os_version=local_release, arch=arch)  # type: ignore
 
 
 class PackageManager(ABC):

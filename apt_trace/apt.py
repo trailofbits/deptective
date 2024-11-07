@@ -82,7 +82,7 @@ class Apt(PackageManager):
             sub_parser.feed(sub_data.decode("utf-8"))
             for contents in sub_parser.contents:
                 arch = contents[len("Contents-") : -len(".gz")]
-                yield cls(
+                yield cls(  # type: ignore
                     PackagingConfig(
                         os="ubuntu",
                         os_version=subdir[:-1],
