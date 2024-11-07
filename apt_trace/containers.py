@@ -1,6 +1,5 @@
 import functools
 import logging
-import sys
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Self, TypeVar, Union
 

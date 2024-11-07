@@ -29,7 +29,7 @@ dev: $(NEEDS_VENV)
 lint: $(NEEDS_VENV)
 	. $(VENV_BIN)/activate && \
 		black --check $(ALL_PY_SRCS) && \
-		ruff $(ALL_PY_SRCS) && \
+		ruff check $(ALL_PY_SRCS) && \
 		mypy $(PY_MODULE)
 
 .PHONY: reformat

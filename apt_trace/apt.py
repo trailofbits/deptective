@@ -1,16 +1,13 @@
-import functools
 import gzip
 import logging
 import re
 from html.parser import HTMLParser
-from pathlib import Path
 from typing import (
     FrozenSet,
     Iterator,
     Tuple,
     Type,
     TypeVar,
-    Union,
 )
 from urllib.error import HTTPError
 from urllib.request import urlopen

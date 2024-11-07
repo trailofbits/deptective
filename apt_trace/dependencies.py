@@ -214,8 +214,6 @@ class SBOMGenerator:
                     yield sbom
                     yielded = True
             except (Exception, KeyboardInterrupt) as e:
-                import traceback
-
                 if sys.stdin.isatty() and not yielded:
                     if not isinstance(e, KeyboardInterrupt):
                         logger.error(str(e))

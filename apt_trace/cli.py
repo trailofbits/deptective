@@ -14,7 +14,7 @@ from rich.logging import RichHandler
 from rich.panel import Panel
 from rich.table import Table
 
-from . import apt
+from . import apt  # noqa: F401
 from .cache import SQLCache
 from .dependencies import (
     SBOM,
