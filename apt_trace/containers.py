@@ -103,8 +103,7 @@ class Execution:
             tail: int | Literal["all"] = "all"
         else:
             tail = scrollback
-        self._output = self.docker_container.logs(stdout=True, stderr=True, tail=tail)
-        return self._output  # type: ignore
+        return self.docker_container.logs(stdout=True, stderr=True, tail=tail)
 
 
 class Container:

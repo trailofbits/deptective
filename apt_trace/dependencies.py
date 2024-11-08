@@ -104,7 +104,9 @@ class PackageResolutionError(SBOMGenerationError):
 
 
 class PreinstallError(SBOMGenerationError):
-    pass
+    def __init__(self, message: str, output: bytes | None = None):
+        super().__init__(message)
+        self.output: bytes | None = output
 
 
 class IrrelevantPackageInstall(SBOMGenerationError):
@@ -497,12 +499,19 @@ class SBOMGeneratorStep(Container):
                             yielded = True
                     except SBOMGenerationError:
                         last_error = last_error
-            except PreinstallError:
+            except PreinstallError as e:
                 # package was unable to be installed, so skip it
+                if e.output is not None and b"enough free space" in e.output:
+                    raise PreinstallError("You do not have enough free space in your Docker VM; "
+                                          "please free some space and try again", e.output)
                 logger.warning(
                     f"[red]:warning: Unable to preinstall package {package}",
                     extra={"markup": True},
                 )
+                if e.output is not None:
+                    logger.warning(
+                        f"output: {e.output!r}"
+                    )
                 continue
             finally:
                 self._progress.update(self._task, advance=1)  # type: ignore
@@ -568,7 +577,7 @@ class SBOMGeneratorStep(Container):
             )
             if retval != 0:
                 raise PreinstallError(
-                    f"Error installing {' '.join(self.preinstall)}: {output}"
+                    f"Error installing {' '.join(self.preinstall)}: {output}", output
                 )
 
     def _cleanup(self):

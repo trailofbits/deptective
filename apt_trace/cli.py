@@ -19,6 +19,7 @@ from .cache import SQLCache
 from .dependencies import (
     SBOM,
     PackageResolutionError,
+    PreinstallError,
     SBOMGenerator,
 )
 from .exceptions import PackageDatabaseNotFoundError, SBOMGenerationError
@@ -321,6 +322,10 @@ def main() -> int:
             f"{e!s}\nPlease make sure that this OS version is still maintained.\n"
             f"Run `apt-trace --list` for a list of available OS versions and architectures."
         )
+        return 1
+    except PreinstallError as e:
+        # This will likely happen if the preinstall failed due to Docker running out of space
+        logger.error(str(e))
         return 1
     except SBOMGenerationError as e:
         logger.error(str(e))
