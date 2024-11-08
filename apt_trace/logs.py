@@ -97,7 +97,11 @@ class DownloadWithProgress:
     def __enter__(self) -> Download:
         if self._enter_progress:
             self.progress.start()
-        return Download(self)
+        try:
+            return Download(self)
+        except:
+            self.progress.stop()
+            raise
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self._enter_progress:
