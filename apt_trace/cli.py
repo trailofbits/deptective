@@ -64,13 +64,16 @@ def list_supported_configurations(console: Console | None = None):
     console.print(table)
 
 
-def load_cache(package_manager_name: str, operating_system: str, release: str, arch: str,
-               rebuild: bool = False) -> SQLCache:
+def load_cache(
+    package_manager_name: str,
+    operating_system: str,
+    release: str,
+    arch: str,
+    rebuild: bool = False,
+) -> SQLCache:
     mgr_class = PackageManager.MANAGERS_BY_NAME[package_manager_name]
     package_manager = mgr_class(
-        PackagingConfig(
-            os=operating_system, os_version=release, arch=arch
-        )
+        PackagingConfig(os=operating_system, os_version=release, arch=arch)
     )
     if rebuild and SQLCache.exists(package_manager):
         SQLCache.path(package_manager).unlink()
@@ -220,11 +223,15 @@ def main() -> int:
             args.operating_system,
             args.release,
             args.arch,
-            args.rebuild
+            args.rebuild,
         )
     except PackageDatabaseNotFoundError as e:
-        if args.operating_system == default_os and args.release == default_release and args.arch == default_arch \
-                and (default_os, default_release, default_arch) != DEFAULT_LINUX:
+        if (
+            args.operating_system == default_os
+            and args.release == default_release
+            and args.arch == default_arch
+            and (default_os, default_release, default_arch) != DEFAULT_LINUX
+        ):
             # we are running on linux that is not supported by the requested package manager
             cache = None  # type: ignore
         else:
@@ -234,13 +241,13 @@ def main() -> int:
             )
             return 1
     if cache is None:
-        logger.warning(f"The system OS, release, and/or architecture is not compatible with {args.package_manager}; "
-                       f"trying {':'.join(DEFAULT_LINUX)} instead…")
+        logger.warning(
+            f"The system OS, release, and/or architecture is not compatible with {args.package_manager}; "
+            f"trying {':'.join(DEFAULT_LINUX)} instead…"
+        )
         try:
             cache = load_cache(
-                args.package_manager,
-                *DEFAULT_LINUX,
-                rebuild=args.rebuild
+                args.package_manager, *DEFAULT_LINUX, rebuild=args.rebuild
             )
         except PackageDatabaseNotFoundError:
             logger.error(
