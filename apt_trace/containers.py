@@ -1,18 +1,17 @@
-import logging
 import functools
+import logging
+from pathlib import Path
 from typing import Dict, List, Literal, Optional, Self, TypeVar, Union
 
 import docker
+import randomname
+import requests.exceptions  # type: ignore
 from docker.client import DockerClient
 from docker.errors import NotFound
 from docker.models.containers import Container as DockerContainer
 from docker.models.images import Image
-
-import randomname
-
 from rich.panel import Panel
 from rich.progress import Progress
-
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +24,8 @@ class Execution:
         self.container: Container = container
         self.docker_container: DockerContainer = docker_container
         self._closed = False
+        self._output: bytes | None = None
+        self._exit_code: int | None = None
 
         logging_driver = docker_container.attrs["HostConfig"]["LogConfig"]["Type"]
 
@@ -39,25 +40,49 @@ class Execution:
         if self._closed:
             return True
 
-        # Refresh and check the container metadata.
-        self.docker_container.reload()
-        return self.docker_container.status == "exited"
+        try:
+            # Refresh and check the container metadata.
+            self.docker_container.reload()
+            if self.docker_container.status == "exited":
+                self.close()
+                return True
+        except NotFound:
+            # the container is not running
+            self.close()
+            return True
+        return False
 
     @functools.cached_property
     def exit_code(self) -> int:
-        return self.docker_container.wait()["StatusCode"]
+        """Blocks until the execution completes and returns its exit code."""
+        if self._exit_code is None:
+            try:
+                self._exit_code = self.docker_container.wait()["StatusCode"]
+            except NotFound:
+                # race condition: the container was closed by a different thread
+                # which should have set self._exit_code
+                pass
+            finally:
+                self.close()
+        return self._exit_code  # type: ignore
 
-    @functools.cached_property
+    @property
     def output(self) -> bytes:
-        try:
-            self.exit_code
-            return self.docker_container.logs(stdout=True, stderr=True)
-        finally:
+        """Blocks until the execution completes and returns its output."""
+        _ = self.exit_code
+        if self._output is None:
             self.close()
+            if self._output is None:
+                return b""
+        return self._output
 
     def close(self):
         if self._closed:
-            raise ValueError("The container is already closed!")
+            return
+        self._closed = True
+        self._output = self.docker_container.logs(stdout=True, stderr=True, tail="all")
+        if self._exit_code is None:
+            self._exit_code = self.docker_container.wait()["StatusCode"]
         try:
             self.docker_container.remove(force=True)
             logger.debug(
@@ -67,12 +92,14 @@ class Execution:
         except NotFound:
             logger.debug(f"Container {self.docker_container.id} was already removed")
         self.container.__exit__(None, None, None)
-        self._closed = True
 
     def logs(self, scrollback: int = -1) -> bytes:
-        if self._closed:
-            return b""
-        if scrollback < 0:
+        if self.done:
+            if scrollback < 0:
+                return self.output
+            else:
+                return self.output[-scrollback:]
+        elif scrollback < 0:
             tail: int | Literal["all"] = "all"
         else:
             tail = scrollback
@@ -138,14 +165,51 @@ class Container:
     def setup_image(self, container: DockerContainer):
         pass
 
-    def run(
+    def files_exist(
+        self, *paths: Path | str, progress: Progress | None = None
+    ) -> dict[str, bool]:
+        paths = {str(p) for p in paths}  # type: ignore
+        ret: dict[str, bool] = {}
+        if not paths:
+            return ret
+        with self:
+            container = self.create(command="")
+            try:
+                if progress is None:
+                    iterator = iter(paths)
+                else:
+                    iterator = progress.track(  # type: ignore
+                        paths, description="checking for missing files…"
+                    )
+                for path in iterator:
+                    ret[str(path)] = (
+                        container.exec_run(
+                            ["ls", path], workdir="/workdir", stdout=False, stderr=False
+                        ).exit_code
+                        == 0
+                    )
+            finally:
+                try:
+                    container.stop()
+                    container.remove(force=True)
+                    logger.debug(
+                        f"Waiting for container {container.id} to be removed..."
+                    )
+                    container.wait(condition="removed")
+                except (NotFound, requests.exceptions.Timeout):
+                    pass
+            return ret
+
+    def file_exists(self, path: Path | str) -> bool:
+        return self.files_exist(path)[str(path)]
+
+    def create(
         self,
         command: Union[str, List[str]],
         workdir: str = "/workdir",
         entrypoint: str = "/bin/bash",
-    ) -> Execution:
-        self.__enter__()
-        try:
+    ) -> DockerContainer:
+        with self:
             image = self.image.id
 
             container = self.client.containers.create(
@@ -161,9 +225,7 @@ class Container:
             try:
                 container.start()
 
-                return Execution(
-                    self, container
-                )  # this calls self.__exit__(...) when it is complete
+                return container
             except Exception:
                 try:
                     container.remove(force=True)
@@ -175,6 +237,19 @@ class Container:
                 except NotFound:
                     logger.debug(f"Container {container.id} was already removed")
                     raise
+
+    def run(
+        self,
+        command: Union[str, List[str]],
+        workdir: str = "/workdir",
+        entrypoint: str = "/bin/bash",
+    ) -> Execution:
+        self.__enter__()
+        try:
+            return Execution(
+                self,
+                self.create(command=command, workdir=workdir, entrypoint=entrypoint),
+            )  # this calls self.__exit__(...) when it is complete
         except RuntimeError as e:
             self.__exit__(type(e), e, None)
             raise
@@ -212,8 +287,11 @@ class Container:
         if self._image is None:
             raise ValueError("The container is not running!")
         logger.debug(f"Removing image {self.image_name}:{self.level} ...")
-        self._image.remove(force=True)
-        logger.debug("Removed.")
+        try:
+            self._image.remove(force=True)
+            logger.debug("Removed.")
+        except requests.exceptions.Timeout as e:
+            logger.warning(f"Timed out waiting for container to be removed: {e!s}")
         self._image = None
         if isinstance(self.parent, Container):
             self.parent.__exit__(None, None, None)
@@ -236,10 +314,11 @@ class Container:
 
 
 class ContainerProgress(Progress):
-    _execution: Optional[Execution] = None
+    execution: Optional[Execution] = None
     _scrollback: int = 10
     _exec_title: Optional[str] = None
     _exec_subtitle: Optional[str] = None
+    _file_progress: Optional[Progress] = None
 
     def execute(
         self,
@@ -248,31 +327,41 @@ class ContainerProgress(Progress):
         subtitle: Optional[str] = None,
         scrollback: int = 10,
     ):
-        if self._execution is not None and not self._execution.done:
+        if self.execution is not None and not self.execution.done:
             raise ValueError("An execution is already assigned to this progress!")
-        self._execution = execution
+        self.execution = execution
         self._scrollback = scrollback
         self._exec_title = title
         self._exec_subtitle = subtitle
+        self._file_progress = None
+
+    @property
+    def file_progress(self) -> Progress | None:
+        return self._file_progress
+
+    @file_progress.setter
+    def file_progress(self, progress: Progress | None):
+        if progress is not self._file_progress:
+            self._file_progress = progress
+            if progress is None:
+                self.execution = None
+            self.refresh()
 
     def get_renderables(self):
         yield self.make_tasks_table(self.tasks)
-        if self._execution is not None:
-            if self._execution.done:
-                self._execution = None
-            else:
-                lines: List[str] = []
-                for line in self._execution.logs(scrollback=self._scrollback).split(
-                    b"\n"
-                ):
-                    try:
-                        lines.append(line.decode("utf-8"))
-                    except UnicodeDecodeError:
-                        lines.append(repr(line)[2:-1])
-                while lines and not lines[-1].strip():
-                    lines.pop()
-                yield Panel(
-                    "\n".join(lines),
-                    title=self._exec_title,
-                    subtitle=self._exec_subtitle,
-                )
+        if self.execution is not None:
+            lines: List[str] = []
+            for line in self.execution.logs(scrollback=self._scrollback).split(b"\n"):
+                try:
+                    lines.append(line.decode("utf-8"))
+                except UnicodeDecodeError:
+                    lines.append(repr(line)[2:-1])
+            while lines and not lines[-1].strip():
+                lines.pop()
+            yield Panel(
+                "\n".join(lines),
+                title=self._exec_title,
+                subtitle=self._exec_subtitle,
+            )
+        if self.file_progress is not None:
+            yield self.file_progress

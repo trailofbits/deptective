@@ -1,6 +1,6 @@
+import sqlite3
 from abc import ABC, abstractmethod
 from pathlib import Path
-import sqlite3
 from typing import FrozenSet, Iterable, Iterator, Set, Tuple, Type, TypeVar, Union
 
 from appdirs import AppDirs
@@ -67,8 +67,11 @@ class Cache(ABC):
         raise NotImplementedError()
 
     @classmethod
-    def from_iterable(cls: Type[T], package_manager: PackageManager,
-                      packages: Iterable[Tuple[str, Iterable[str]]]) -> T:
+    def from_iterable(
+        cls: Type[T],
+        package_manager: PackageManager,
+        packages: Iterable[Tuple[str, Iterable[str]]],
+    ) -> T:
         """
         Imports the iterable `packages` into the native cache format, returning a new
         cache object.
@@ -113,27 +116,30 @@ class SQLCache(Cache, ABC):
 
     @classmethod
     def from_disk(cls: Type[T], package_manager: PackageManager) -> T:
-        db_path = cls.path(package_manager)
+        db_path = cls.path(package_manager)  # type: ignore
         if not db_path.exists():
-            return cls.from_iterable(package_manager, package_manager.iter_packages())
-        return cls(package_manager, conn=sqlite3.connect(str(db_path)))
+            return cls.from_iterable(package_manager, package_manager.iter_packages())  # type: ignore
+        return cls(package_manager, conn=sqlite3.connect(str(db_path)))  # type: ignore
 
     @classmethod
-    def from_iterable(cls: Type[T], package_manager: PackageManager,
-                      packages: Iterable[Tuple[str, Iterable[str]]]) -> T:
-        ret = cls(package_manager, conn=sqlite3.connect(str(cls.path(package_manager))))
+    def from_iterable(
+        cls: Type[T],
+        package_manager: PackageManager,
+        packages: Iterable[Tuple[str, Iterable[str]]],
+    ) -> T:
+        ret: T = cls(package_manager, conn=sqlite3.connect(str(cls.path(package_manager))))  # type: ignore
 
         try:
-            ret._create_tables()
-            with ret.conn:
+            ret._create_tables()  # type: ignore
+            with ret.conn:  # type: ignore
                 for filename, pkgs in packages:
-                    ret.conn.executemany(
+                    ret.conn.executemany(  # type: ignore
                         "INSERT INTO files(filename, package) VALUES(?, ?)",
                         [(filename, package) for package in pkgs],
                     )
             return ret
         except:
-            contents_db_path = ret.path(package_manager)
+            contents_db_path = ret.path(package_manager)  # type: ignore
             if contents_db_path.exists():
                 contents_db_path.unlink()
             raise

@@ -1,13 +1,10 @@
-import functools
 import gzip
-from html.parser import HTMLParser
 import logging
-from pathlib import Path
 import re
+from html.parser import HTMLParser
 from typing import (
     FrozenSet,
     Iterator,
-    Union,
     Tuple,
     Type,
     TypeVar,
@@ -19,7 +16,6 @@ from .containers import DockerContainer
 from .exceptions import PackageDatabaseNotFoundError, PackageResolutionError
 from .logs import DownloadWithProgress, iterative_readlines
 from .package_manager import PackageManager, PackagingConfig
-
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +64,7 @@ class Apt(PackageManager):
     def install(self, container: DockerContainer, *packages: str) -> Tuple[int, bytes]:
         if not packages:
             return 0, b""
-        return container.exec_run(
-            f"apt-get -y install {' '.join(packages)}"
-        )
+        return container.exec_run(f"apt-get -y install {' '.join(packages)}")
 
     @classmethod
     def versions(cls: Type[T]) -> Iterator[T]:
@@ -87,12 +81,14 @@ class Apt(PackageManager):
             sub_parser = UbuntuDistParser()
             sub_parser.feed(sub_data.decode("utf-8"))
             for contents in sub_parser.contents:
-                arch = contents[len("Contents-"):-len(".gz")]
-                yield cls(PackagingConfig(
-                    os="ubuntu",
-                    os_version=subdir[:-1],
-                    arch=arch,
-                ))
+                arch = contents[len("Contents-") : -len(".gz")]
+                yield cls(  # type: ignore
+                    PackagingConfig(
+                        os="ubuntu",
+                        os_version=subdir[:-1],
+                        arch=arch,
+                    )
+                )
 
     def iter_packages(self) -> Iterator[Tuple[str, FrozenSet[str]]]:
         """
@@ -106,6 +102,8 @@ class Apt(PackageManager):
             f"Downloading {contents_url}\n"
             "This is a one-time download and may take a few minutes."
         )
+        # for some reason, Ubuntu doesn't include /usr/bin/cc in its package database:
+        yield "usr/bin/cc", frozenset({"gcc", "g++", "clang"})
         contents_pattern = re.compile(r"(\S+)\s+(\S.*)")
         try:
             with DownloadWithProgress(contents_url) as p, gzip.open(p, "rb") as gz:
@@ -123,22 +121,24 @@ class Apt(PackageManager):
             error = e
         if error is not None:
             if error.code == 404:
-                raise AptDatabaseNotFoundError(f"Received an HTTP 404 error when trying to download the package "
-                                               f"database for "
-                                               f"{self.config.os}:{self.config.os_version}-{self.config.arch} from "
-                                               f"{contents_url}")
+                raise AptDatabaseNotFoundError(
+                    f"Received an HTTP 404 error when trying to download the package "
+                    f"database for "
+                    f"{self.config.os}:{self.config.os_version}-{self.config.arch} from "
+                    f"{contents_url}"
+                )
             else:
-                raise AptResolutionError(f"Error trying to download the package database for "
-                                         f"{self.config.os}:{self.config.os_version}-{self.config.arch} from "
-                                         f"{contents_url}: {error!s}")
+                raise AptResolutionError(
+                    f"Error trying to download the package database for "
+                    f"{self.config.os}:{self.config.os_version}-{self.config.arch} from "
+                    f"{contents_url}: {error!s}"
+                )
 
     def dockerfile(self) -> str:
         return f"""FROM {self.config.os}:{self.config.os_version} AS builder
         
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get -y update && apt-get install -y gcc linux-headers-generic python3
-COPY apt-strace.c /
-RUN gcc apt-strace.c -Wall -Wextra -Werror -o apt-strace
+RUN apt-get -y update && apt-get install -y strace
 
 FROM {self.config.os}:{self.config.os_version}
 ENV DEBIAN_FRONTEND=noninteractive
@@ -146,7 +146,8 @@ RUN apt-get -y update
 RUN echo "APT::Get::Install-Recommends \"false\";" >> /etc/apt/apt.conf
 RUN echo "APT::Get::Install-Suggests \"false\";" >> /etc/apt/apt.conf
 RUN mkdir /src/
-COPY --from=builder /apt-strace /usr/bin/
+COPY --from=builder /usr/bin/strace /usr/bin/strace-native
+COPY apt-strace /usr/bin/apt-strace
 
 ENTRYPOINT ["/usr/bin/apt-strace"]
 """

@@ -1,10 +1,10 @@
 import os
-import time
-from io import BytesIO
-from logging import getLogger
-from pathlib import Path
 import sys
 import tarfile
+import time
+from io import BytesIO
+from logging import DEBUG, getLogger
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import (
     Dict,
@@ -19,19 +19,22 @@ from typing import (
 )
 
 import docker
-from docker.models.images import Image
 import randomname
+from docker.models.images import Image
 from rich.console import Console
-from rich.progress import Progress, MofNCompleteColumn, TaskID
+from rich.panel import Panel
+from rich.progress import MofNCompleteColumn, Progress, TaskID
+from rich.prompt import Confirm
 
-from .cache import Cache, CACHE_DIR
+from .cache import CACHE_DIR, Cache
 from .containers import Container, ContainerProgress, DockerContainer
 from .exceptions import SBOMGenerationError
+from .strace import ParseError, lazy_parse_paths
 
 logger = getLogger(__name__)
 
 
-APT_STRACE_DIR = Path(__file__).absolute().parent / "apt-strace"
+APT_STRACE_DIR = Path(__file__).absolute().parent / "strace"
 
 
 class SBOM:
@@ -79,9 +82,15 @@ class NonZeroExit(SBOMGenerationError):
 
 
 class PackageResolutionError(SBOMGenerationError):
-    def __init__(self, message: str, command_output: bytes | None = None):
+    def __init__(
+        self,
+        message: str,
+        command_output: bytes | None = None,
+        partial_sbom: SBOM | None = None,
+    ):
         super().__init__(message)
         self.command_output: bytes | None = command_output
+        self.partial_sbom: SBOM | None = partial_sbom
 
     @property
     def command_output_str(self) -> str | None:
@@ -95,7 +104,9 @@ class PackageResolutionError(SBOMGenerationError):
 
 
 class PreinstallError(SBOMGenerationError):
-    pass
+    def __init__(self, message: str, output: bytes | None = None):
+        super().__init__(message)
+        self.output: bytes | None = output
 
 
 class IrrelevantPackageInstall(SBOMGenerationError):
@@ -105,6 +116,7 @@ class IrrelevantPackageInstall(SBOMGenerationError):
 def build_context(root_path: Path | str, dockerfile: str) -> BytesIO:
     fh = BytesIO()
     with tarfile.open(fileobj=fh, mode="w") as tar:
+
         def dockerfile_filter(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
             if info.name in ("Dockerfile", "./Dockerfile"):
                 return None
@@ -159,9 +171,7 @@ class SBOMGenerator:
         pm = self.cache.package_manager
         dockerfile = pm.dockerfile()
         pm_suffix = f"{pm.NAME}-{pm.config.os}-{pm.config.os_version}-{pm.config.arch}"
-        cached_dockerfile_path = CACHE_DIR / (
-            f"Dockerfile-{pm_suffix}"
-        )
+        cached_dockerfile_path = CACHE_DIR / (f"Dockerfile-{pm_suffix}")
         image_name = f"trailofbits/apt-strace-{pm_suffix}"
         if not cached_dockerfile_path.exists():
             cached_content = ""
@@ -174,7 +184,7 @@ class SBOMGenerator:
                 history = image.history()
                 if history:
                     creation_time = max(c["Created"] for c in image.history())
-                    source = APT_STRACE_DIR / "apt-strace.c"
+                    source = APT_STRACE_DIR / "apt-strace"
                     min_creation_time = source.stat().st_mtime
                     if creation_time < min_creation_time:
                         # it needs to be rebuilt!
@@ -182,7 +192,7 @@ class SBOMGenerator:
                 return image
         # we need to build the image!
         logger.info(
-            f"Building the base Docker image…\n"
+            "Building the base Docker image…\n"
             "This is a one-time operation that may take a few minutes."
         )
         result = self.client.images.build(
@@ -199,9 +209,48 @@ class SBOMGenerator:
 
     def main(self, command: str, *args: str) -> Iterator[SBOM]:
         with SBOMGeneratorStep(self, command, args) as step:
-            for sbom in step.find_feasible_sboms():
-                self.feasible.add(sbom)
-                yield sbom
+            yielded = False
+            try:
+                for sbom in step.find_feasible_sboms():
+                    self.feasible.add(sbom)
+                    yield sbom
+                    yielded = True
+            except (Exception, KeyboardInterrupt) as e:
+                if sys.stdin.isatty() and not yielded:
+                    if not isinstance(e, KeyboardInterrupt):
+                        logger.error(str(e))
+                        prompt = "Would you like to see the most promising SBOM before the error is handled?"
+                    else:
+                        prompt = "Would you like to see the most promising SBOM before exiting?"
+                    if Confirm.ask(prompt, console=self.console):
+                        self.console.print(
+                            Panel(
+                                " ".join(
+                                    (
+                                        f":floppy_disk: [bold italic]{p}[/bold italic]"
+                                        for p in step.best_sbom.sbom
+                                    )
+                                ),
+                                title="Most Promising Partial SBOM",
+                            )
+                        )
+                        if step.best_sbom.command_output:
+                            try:
+                                cmd_output_str = step.best_sbom.command_output.decode(
+                                    "utf-8"
+                                )
+                            except UnicodeDecodeError:
+                                cmd_output_str = repr(step.best_sbom.command_output)[
+                                    2:-1
+                                ]
+                            if cmd_output_str:
+                                self.console.print(
+                                    Panel(
+                                        cmd_output_str,
+                                        title=f"`{command} {' '.join(args)}` Output",
+                                    )
+                                )
+                raise e
 
 
 class SBOMGeneratorStep(Container):
@@ -215,8 +264,12 @@ class SBOMGeneratorStep(Container):
     ):
         if parent is None:
             p: Union[Image, SBOMGeneratorStep] = generator.apt_strace_image
+            self.root: SBOMGeneratorStep = self
+            self._best_sbom: SBOMGeneratorStep | None = self
         else:
             p = parent
+            self.root = parent.root
+            self._best_sbom = None
         super().__init__(parent=p, client=generator.client)
         self._log_tmpdir: Optional[TemporaryDirectory] = None
         self._logdir: Optional[Path] = None
@@ -226,8 +279,10 @@ class SBOMGeneratorStep(Container):
         self.generator: SBOMGenerator = generator
         self.retval: int = -1
         if parent is not None:
-            self.tried_packages: Set[str] = set(parent.tried_packages)
+            self.tried_packages: Set[str] = parent.tried_packages | parent.preinstall
             self._progress: ContainerProgress = parent._progress
+            if self.level > self.best_sbom.level:
+                self.root._best_sbom = self
         else:
             self.level = 0
             self.tried_packages = set()
@@ -238,9 +293,52 @@ class SBOMGeneratorStep(Container):
                 transient=True,
                 expand=True,
             )
-        self.command_output: Optional[bytes] = None
+        self._command_output: Optional[bytes] = None
         self.missing_files: List[str] = []
         self._task: Optional[TaskID] = None
+
+    @property
+    def command_output(self) -> Optional[bytes]:
+        return self._command_output
+
+    @command_output.setter
+    def command_output(self, value: bytes):
+        if value is None:
+            raise ValueError("command_output cannot be None")
+        elif self._command_output is not None and self._command_output != value:
+            raise ValueError("The command output can only be set once!")
+        self._command_output = value
+        if (
+            self.level == self.best_sbom.level
+            and self.best_sbom.command_output is not None
+            and len(value) > len(self.best_sbom.command_output)
+        ):
+            self.root._best_sbom = self
+
+    @property
+    def best_sbom(self) -> "SBOMGeneratorStep":
+        return self.root._best_sbom  # type: ignore
+
+    def _missing_files(self, container: Container, *paths: Path | str) -> Set[str]:
+        to_check: Set[str] = {str(p) for p in paths}
+        progress = Progress(transient=True, console=self._progress.console)
+        self._progress.file_progress = progress
+        try:
+            file_existence = container.files_exist(
+                *(to_check - set(self.missing_files)), progress=progress
+            )
+            if logger.level <= DEBUG:
+                if file_existence:
+                    af = (
+                        f"\n{p} ({['NOT FOUND', 'EXISTS'][exists]})"
+                        for p, exists in file_existence.items()
+                    )
+                    logger.debug(f"Accessed files: {''.join(af)}")
+                else:
+                    logger.debug("No files accessed.")
+        finally:
+            self._progress.file_progress = None
+        return {p for p, exists in file_existence.items() if not exists}
 
     @property
     def full_command(self) -> str:
@@ -277,37 +375,56 @@ class SBOMGeneratorStep(Container):
         raise PackageResolutionError(
             f"`{self.full_command}` exited with code {self.retval} having looked for missing"
             f" files {list(self.missing_files_without_duplicates)!r}, none of which are"
-            " satisfied by Ubuntu packages",
+            f" satisfied by {self.generator.cache.package_manager.NAME} packages",
             command_output=self.command_output,
         )
 
     def find_feasible_sboms(self) -> Iterator[SBOM]:
         logger.debug(f"Running step {self.level}...")
-        try:
-            logger.debug(f"apt-strace /log/apt-trace.txt {self.full_command}")
-            exe = self.run(
-                ["/log/apt-trace.txt", self.command] + list(self.args),
-                entrypoint="/usr/bin/apt-strace",
-                workdir="/workdir",
-            )
-            self._progress.execute(
-                exe,
-                title=self.full_command,
-                subtitle=self.sbom.rich_str,
-                scrollback=5,
-            )
-            while not exe.done:
-                self._progress.refresh()
-                time.sleep(0.5)
-            self.retval = exe.exit_code
-            self.command_output = exe.output
-        finally:
-            logger.debug(f"Ran, exit code {self.retval}")
-        with open(self._logdir / "apt-trace.txt") as log:
-            for line in log:
-                if line.startswith("missing\t"):
-                    self.missing_files.append(line[len("missing\t") :].strip())
-        logger.debug(self.missing_files)
+        with self:
+            # open a context so we keep the container running after the `self.run` command
+            # so we can query it for missing files
+            try:
+                logger.debug(f"apt-strace /log/apt-trace.txt {self.full_command}")
+                exe = self.run(
+                    ["/log/apt-trace.txt", self.command] + list(self.args),
+                    entrypoint="/usr/bin/apt-strace",
+                    workdir="/workdir",
+                )
+                self._progress.execute(
+                    exe,
+                    title=self.full_command,
+                    subtitle=self.sbom.rich_str,
+                    scrollback=5,
+                )
+                while not exe.done:
+                    self._progress.refresh()
+                    time.sleep(0.5)
+                self.retval = exe.exit_code
+                self.command_output = exe.output
+            finally:
+                logger.debug(f"Ran, exit code {self.retval}")
+            accessed_files: set[str] = set()
+            with open(self._logdir / "apt-trace.txt") as log:  # type: ignore
+                for line in log:
+                    try:
+                        for arg in lazy_parse_paths(line):
+                            if arg.startswith("/"):
+                                accessed_files.add(arg)
+                    except ParseError as e:
+                        logger.warning(str(e))
+                        continue
+
+            new_missing_files = self._missing_files(exe.container, *accessed_files)
+            for path in new_missing_files:
+                if ".." in path:
+                    resolved = str(Path(path).resolve())
+                    if resolved != path:
+                        # the path contains something like "/foo/bar/../baz",
+                        # so resolve it to /foo/baz
+                        self.missing_files.append(resolved)
+                        continue
+                self.missing_files.append(path)
         if self.retval == 0:
             yield SBOM()
             return
@@ -330,24 +447,28 @@ class SBOMGeneratorStep(Container):
                 f"`{self.full_command}` exited with code {self.retval} regardless of the"
                 f" install of package(s) {', '.join(self.preinstall)}"
             )
-        packages_to_try: List[str] = []
-        history: Set[str] = set()
-        for file in reversed(self.missing_files):
-            # reverse the missing files so we try the last missing files first
-            new_packages = (
-                set(self.generator.cache[file])
-                - self.tried_packages
-                - self.preinstall
-                - history
-            )
-            packages_to_try.extend(new_packages)
-            history |= new_packages
+        packages_to_try: Dict[str, tuple[int, int]] = {}
+        for i, file in enumerate(self.missing_files):
+            for possibility in self.generator.cache[file]:
+                if possibility in self.tried_packages or possibility in self.preinstall:
+                    # we already tried this package
+                    continue
+                elif possibility in packages_to_try:
+                    packages_to_try[possibility] = (
+                        packages_to_try[possibility][0] + 1,
+                        i,
+                    )
+                else:
+                    packages_to_try[possibility] = (1, i)
         if not packages_to_try:
             self._register_infeasible()  # this always raises an exception
         yielded = False
         last_error: Optional[SBOMGenerationError] = None
-        self._progress.update(self._task, total=len(packages_to_try))
-        for package in sorted(packages_to_try):
+        self._progress.update(self._task, total=len(packages_to_try))  # type: ignore
+        for _, _, package in sorted(
+            ((count, idx, name) for name, (count, idx) in packages_to_try.items()),
+            reverse=True,
+        ):
             try:
                 step = SBOMGeneratorStep(
                     generator=self.generator,
@@ -378,18 +499,35 @@ class SBOMGeneratorStep(Container):
                             yielded = True
                     except SBOMGenerationError:
                         last_error = last_error
-            except PreinstallError:
+            except PreinstallError as e:
                 # package was unable to be installed, so skip it
+                if e.output is not None and b"enough free space" in e.output:
+                    raise PreinstallError(
+                        "You do not have enough free space in your Docker VM; "
+                        "please free some space and try again",
+                        e.output,
+                    )
                 logger.warning(
                     f"[red]:warning: Unable to preinstall package {package}",
                     extra={"markup": True},
                 )
+                if e.output is not None:
+                    logger.warning(f"output: {e.output!r}")
                 continue
             finally:
-                self._progress.update(self._task, advance=1)
+                self._progress.update(self._task, advance=1)  # type: ignore
         if not yielded:
             if last_error is not None:
                 raise last_error
+            elif self.level == 0:
+                raise PackageResolutionError(
+                    f"Could not find a feasible SBOM that satisfies all of the missing packages for "
+                    f"`{self.full_command}`. The most promising partial SBOM exited with code {self.best_sbom.retval} "
+                    f"having looked for missing files {list(self.best_sbom.missing_files_without_duplicates)!r}, none "
+                    f"of which are satisfied by {self.generator.cache.package_manager.NAME} packages",
+                    command_output=self.best_sbom.command_output,
+                    partial_sbom=self.best_sbom.sbom,
+                )
             else:
                 self._register_infeasible()  # this always raises an exception
 
@@ -410,7 +548,9 @@ class SBOMGeneratorStep(Container):
                     "Error copying the source files to /workdir in the Docker image:"
                     f" {output}"
                 )
-            logger.info(f"Updating {self.generator.cache.package_manager.NAME} sources...")
+            logger.info(
+                f"Updating {self.generator.cache.package_manager.NAME} sources..."
+            )
             retval, output = self.generator.cache.package_manager.update(container)
             if retval != 0:
                 raise ValueError(f"Error updating packages: {output}")
@@ -424,25 +564,29 @@ class SBOMGeneratorStep(Container):
                 # determine the $PATH inside the container:
                 retval, output = container.exec_run("printenv PATH")
                 if retval != 0:
-                    raise ValueError(f"Error determining the $PATH inside of the container: {output}")
+                    raise ValueError(
+                        f"Error determining the $PATH inside of the container: {output}"
+                    )
                 for path in (p.strip() for p in output.decode("utf-8").split(":")):
                     self.missing_files.append(str(Path(path) / self.command))
         if self.preinstall:
             logger.info(
                 f"Installing {', '.join(self.preinstall)} into {container.short_id}..."
             )
-            retval, output = self.generator.cache.package_manager.install(container, *self.preinstall)
+            retval, output = self.generator.cache.package_manager.install(
+                container, *self.preinstall
+            )
             if retval != 0:
                 raise PreinstallError(
-                    f"Error installing {' '.join(self.preinstall)}: {output}"
+                    f"Error installing {' '.join(self.preinstall)}: {output}", output
                 )
 
     def _cleanup(self):
-        log_tmpdir = self._log_tmpdir
+        log_tmpdir: TemporaryDirectory = self._log_tmpdir  # type: ignore
         self._logdir = None
         self._log_tmpdir = None
         log_tmpdir.__exit__(None, None, None)
-        self._progress.remove_task(self._task)
+        self._progress.remove_task(self._task)  # type: ignore
         if self.level == 0:
             self._progress.__exit__(None, None, None)
 
