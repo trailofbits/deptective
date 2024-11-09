@@ -137,7 +137,7 @@ class Container:
         else:
             self.level = 0
         if image_name is None:
-            image_name = f"trailofbits/apt-trace-{randomname.get_name()}"
+            image_name = f"trailofbits/deptective-{randomname.get_name()}"
         self.image_name: str = image_name
 
     @property

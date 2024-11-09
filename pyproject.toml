@@ -3,7 +3,7 @@ requires = ["flit_core >=3.2,<4"]
 build-backend = "flit_core.buildapi"
 
 [project]
-name = "apt_trace"
+name = "deptective"
 authors = [{name = "Trail of Bits", email = "opensource@trailofbits.com"}]
 readme = "README.md"
 license = {text = "LGPL-3.0-or-later"}
@@ -26,10 +26,10 @@ dependencies = [
 requires_python = ">=3.10"
 
 [project.scripts]
-apt-trace = "apt_trace.__main__:main"
+deptective = "deptective.__main__:main"
 
 [project.urls]
-Home = "https://github.com/trailofbits/apt-trace"
+Home = "https://github.com/trailofbits/deptective"
 
 [project.optional-dependencies]
 lint = [

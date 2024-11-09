@@ -1,6 +1,6 @@
 from unittest import TestCase
 
-from apt_trace.strace import Arg, ListArg, parse_strace_log_line, parse_syscall_args
+from deptective.strace import Arg, ListArg, parse_strace_log_line, parse_syscall_args
 
 
 class TestStrace(TestCase):

@@ -172,7 +172,7 @@ class SBOMGenerator:
         dockerfile = pm.dockerfile()
         pm_suffix = f"{pm.NAME}-{pm.config.os}-{pm.config.os_version}-{pm.config.arch}"
         cached_dockerfile_path = CACHE_DIR / (f"Dockerfile-{pm_suffix}")
-        image_name = f"trailofbits/apt-strace-{pm_suffix}"
+        image_name = f"trailofbits/deptective-strace-{pm_suffix}"
         if not cached_dockerfile_path.exists():
             cached_content = ""
         else:
@@ -184,7 +184,7 @@ class SBOMGenerator:
                 history = image.history()
                 if history:
                     creation_time = max(c["Created"] for c in image.history())
-                    source = APT_STRACE_DIR / "apt-strace"
+                    source = APT_STRACE_DIR / "deptective-strace"
                     min_creation_time = source.stat().st_mtime
                     if creation_time < min_creation_time:
                         # it needs to be rebuilt!
@@ -385,10 +385,10 @@ class SBOMGeneratorStep(Container):
             # open a context so we keep the container running after the `self.run` command
             # so we can query it for missing files
             try:
-                logger.debug(f"apt-strace /log/apt-trace.txt {self.full_command}")
+                logger.debug(f"deptective-strace /log/apt-trace.txt {self.full_command}")
                 exe = self.run(
                     ["/log/apt-trace.txt", self.command] + list(self.args),
-                    entrypoint="/usr/bin/apt-strace",
+                    entrypoint="/usr/bin/deptective-strace",
                     workdir="/workdir",
                 )
                 self._progress.execute(

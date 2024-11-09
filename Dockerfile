@@ -1,6 +1,6 @@
 FROM python:3.11
 
-RUN apt-get update && apt install -y apt-file python3-setuptools && apt-file update && mkdir /apt_trace
+RUN apt-get update && apt install -y apt-file python3-setuptools && apt-file update && mkdir /deptective
 
 COPY . /apt_trace/
 

@@ -1,6 +1,6 @@
 from unittest import TestCase
 
-from apt_trace.containers import Container
+from deptective.containers import Container
 
 
 class ContainerTests(TestCase):
