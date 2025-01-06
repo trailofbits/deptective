@@ -385,7 +385,9 @@ class SBOMGeneratorStep(Container):
             # open a context so we keep the container running after the `self.run` command
             # so we can query it for missing files
             try:
-                logger.debug(f"deptective-strace /log/apt-trace.txt {self.full_command}")
+                logger.debug(
+                    f"deptective-strace /log/apt-trace.txt {self.full_command}"
+                )
                 exe = self.run(
                     ["/log/apt-trace.txt", self.command] + list(self.args),
                     entrypoint="/usr/bin/deptective-strace",

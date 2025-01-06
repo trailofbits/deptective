@@ -1,11 +1,11 @@
-FROM python:3.11
+FROM python:3.13
 
 RUN apt-get update && apt install -y apt-file python3-setuptools && apt-file update && mkdir /deptective
 
-COPY . /apt_trace/
+COPY . /deptective/
 
-WORKDIR /apt_trace
+WORKDIR /deptective
 
 RUN pip install .
 
-CMD apt-trace
+CMD deptective

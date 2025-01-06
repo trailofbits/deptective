@@ -37,7 +37,7 @@ lint = [
     "black",
     "mypy",
 ]
-dev = ["apt_trace[lint]", "twine"]
+dev = ["deptective[lint]", "twine"]
 
 [tool.mypy]
 ignore_missing_imports = true

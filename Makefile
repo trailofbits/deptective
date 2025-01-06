@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-PY_MODULE := apt_trace
+PY_MODULE := deptective
 
 ALL_PY_SRCS := $(shell find $(PY_MODULE) -name '*.py')
 
@@ -19,7 +19,7 @@ all:
 	@echo "Run my targets individually!"
 
 $(NEEDS_VENV): pyproject.toml
-	python -m venv $(VENV) --upgrade-deps
+	python3 -m venv $(VENV) --upgrade-deps
 	$(VENV_BIN)/python -m pip install -e .[$(INSTALL_EXTRA)]
 
 .PHONY: dev
@@ -35,8 +35,8 @@ lint: $(NEEDS_VENV)
 .PHONY: reformat
 reformat: $(NEEDS_VENV)
 	. $(VENV_BIN)/activate && \
-		ruff --fix $(ALL_PY_SRCS) && \
-		black $(ALL_PY_SRCS)
+		black $(ALL_PY_SRCS) \
+		# && ruff --fix $(ALL_PY_SRCS)
 
 .PHONY: edit
 edit:
