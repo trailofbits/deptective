@@ -1,7 +1,12 @@
 import functools
 import logging
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Self, TypeVar, Union
+import sys
+from typing import Dict, List, Literal, Optional, TypeVar, Union
+if sys.version_info < (3, 11):
+    from typing_extensions import Self
+else:
+    from typing import Self
 
 import docker
 import randomname
