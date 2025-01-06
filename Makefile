@@ -45,3 +45,14 @@ edit:
 .PHONY: run
 run: $(NEEDS_VENV)
 	@./$(VENV_BIN)/python -m $(PY_MODULE) $(ARGS)
+
+.PHONY: test
+test: $(NEEDS_VENV)
+	. $(VENV_BIN)/activate && \
+		pytest --cov=$(PY_MODULE) test/ && \
+		python -m coverage report
+
+.PHONY: dist
+dist: $(NEEDS_VENV)
+	. $(VENV_BIN)/activate && \
+		python -m build
