@@ -154,7 +154,7 @@ class SBOMGenerator:
     def image_name(self) -> str:
         if self._image_name is None:
             while True:
-                image_name = f"trailofbits/apt-trace-{randomname.get_name()}"
+                image_name = f"trailofbits/deptective-{randomname.get_name()}"
                 if not self.client.images.list(name=image_name):
                     break
             self._image_name = image_name
@@ -386,10 +386,10 @@ class SBOMGeneratorStep(Container):
             # so we can query it for missing files
             try:
                 logger.debug(
-                    f"deptective-strace /log/apt-trace.txt {self.full_command}"
+                    f"deptective-strace /log/deptective.txt {self.full_command}"
                 )
                 exe = self.run(
-                    ["/log/apt-trace.txt", self.command] + list(self.args),
+                    ["/log/deptective.txt", self.command] + list(self.args),
                     entrypoint="/usr/bin/deptective-strace",
                     workdir="/workdir",
                 )
@@ -407,7 +407,7 @@ class SBOMGeneratorStep(Container):
             finally:
                 logger.debug(f"Ran, exit code {self.retval}")
             accessed_files: set[str] = set()
-            with open(self._logdir / "apt-trace.txt") as log:  # type: ignore
+            with open(self._logdir / "deptective.txt") as log:  # type: ignore
                 for line in log:
                     try:
                         for arg in lazy_parse_paths(line):
