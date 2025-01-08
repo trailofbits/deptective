@@ -34,7 +34,7 @@ from .strace import ParseError, lazy_parse_paths
 logger = getLogger(__name__)
 
 
-APT_STRACE_DIR = Path(__file__).absolute().parent / "strace"
+DOCKERFILE_DIR = Path(__file__).absolute().parent / "strace"
 
 
 class SBOM:
@@ -167,7 +167,7 @@ class SBOMGenerator:
         return self._client
 
     @property
-    def apt_strace_image(self) -> Image:
+    def deptective_strace_image(self) -> Image:
         pm = self.cache.package_manager
         dockerfile = pm.dockerfile()
         pm_suffix = f"{pm.NAME}-{pm.config.os}-{pm.config.os_version}-{pm.config.arch}"
@@ -184,7 +184,7 @@ class SBOMGenerator:
                 history = image.history()
                 if history:
                     creation_time = max(c["Created"] for c in image.history())
-                    source = APT_STRACE_DIR / "deptective-strace"
+                    source = DOCKERFILE_DIR / "deptective-strace"
                     min_creation_time = source.stat().st_mtime
                     if creation_time < min_creation_time:
                         # it needs to be rebuilt!
@@ -196,7 +196,7 @@ class SBOMGenerator:
             "This is a one-time operation that may take a few minutes."
         )
         result = self.client.images.build(
-            fileobj=build_context(str(APT_STRACE_DIR), dockerfile),
+            fileobj=build_context(str(DOCKERFILE_DIR), dockerfile),
             dockerfile="./Dockerfile",
             custom_context=True,
             tag=image_name,
@@ -263,7 +263,7 @@ class SBOMGeneratorStep(Container):
         parent: Optional["SBOMGeneratorStep"] = None,
     ):
         if parent is None:
-            p: Union[Image, SBOMGeneratorStep] = generator.apt_strace_image
+            p: Union[Image, SBOMGeneratorStep] = generator.deptective_strace_image
             self.root: SBOMGeneratorStep = self
             self._best_sbom: SBOMGeneratorStep | None = self
         else:
