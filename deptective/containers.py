@@ -1,7 +1,13 @@
 import functools
 import logging
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Self, TypeVar, Union
+import sys
+from typing import Dict, List, Literal, Optional, TypeVar, Union
+
+if sys.version_info < (3, 11):
+    from typing_extensions import Self
+else:
+    from typing import Self
 
 import docker
 import randomname
@@ -137,7 +143,7 @@ class Container:
         else:
             self.level = 0
         if image_name is None:
-            image_name = f"trailofbits/apt-trace-{randomname.get_name()}"
+            image_name = f"trailofbits/deptective-{randomname.get_name()}"
         self.image_name: str = image_name
 
     @property

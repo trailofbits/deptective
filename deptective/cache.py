@@ -7,7 +7,7 @@ from appdirs import AppDirs
 
 from .package_manager import PackageManager
 
-APP_DIRS = AppDirs("apt-trace", "Trail of Bits")
+APP_DIRS = AppDirs("deptective", "Trail of Bits")
 CACHE_DIR = Path(APP_DIRS.user_cache_dir)
 if not CACHE_DIR.exists():
     CACHE_DIR.mkdir(parents=True)

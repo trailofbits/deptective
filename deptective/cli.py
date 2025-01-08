@@ -168,7 +168,7 @@ def main() -> int:
             for x in range(1, 101)
             if not logging.getLevelName(x).startswith("Level")
         ),
-        help="sets the log level for apt-trace (default=INFO)",
+        help="sets the log level for deptective (default=INFO)",
     )
     log_group.add_argument(
         "--debug", action="store_true", help="equivalent to `--log-level=DEBUG`"
@@ -237,7 +237,7 @@ def main() -> int:
         else:
             logger.error(
                 f"{e!s}\nPlease make sure that this OS version is still maintained.\n"
-                f"Run `apt-trace --list` for a list of available OS versions and architectures."
+                f"Run `deptective --list` for a list of available OS versions and architectures."
             )
             return 1
     if cache is None:
@@ -252,7 +252,7 @@ def main() -> int:
         except PackageDatabaseNotFoundError:
             logger.error(
                 f"Could not find an OS version and architecture for {args.package_manager}.\n"
-                f"Run `apt-trace --list` for a list of available OS versions and architectures."
+                f"Run `deptective --list` for a list of available OS versions and architectures."
             )
             return 1
 
@@ -327,7 +327,7 @@ def main() -> int:
     except PackageDatabaseNotFoundError as e:
         logger.error(
             f"{e!s}\nPlease make sure that this OS version is still maintained.\n"
-            f"Run `apt-trace --list` for a list of available OS versions and architectures."
+            f"Run `deptective --list` for a list of available OS versions and architectures."
         )
         return 1
     except PreinstallError as e:

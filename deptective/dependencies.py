@@ -34,7 +34,7 @@ from .strace import ParseError, lazy_parse_paths
 logger = getLogger(__name__)
 
 
-APT_STRACE_DIR = Path(__file__).absolute().parent / "strace"
+DEPTECTIVE_STRACE_DIR = Path(__file__).absolute().parent / "strace"
 
 
 class SBOM:
@@ -154,7 +154,7 @@ class SBOMGenerator:
     def image_name(self) -> str:
         if self._image_name is None:
             while True:
-                image_name = f"trailofbits/apt-trace-{randomname.get_name()}"
+                image_name = f"trailofbits/deptective-{randomname.get_name()}"
                 if not self.client.images.list(name=image_name):
                     break
             self._image_name = image_name
@@ -167,12 +167,12 @@ class SBOMGenerator:
         return self._client
 
     @property
-    def apt_strace_image(self) -> Image:
+    def deptective_strace_image(self) -> Image:
         pm = self.cache.package_manager
         dockerfile = pm.dockerfile()
         pm_suffix = f"{pm.NAME}-{pm.config.os}-{pm.config.os_version}-{pm.config.arch}"
         cached_dockerfile_path = CACHE_DIR / (f"Dockerfile-{pm_suffix}")
-        image_name = f"trailofbits/apt-strace-{pm_suffix}"
+        image_name = f"trailofbits/deptective-strace-{pm_suffix}"
         if not cached_dockerfile_path.exists():
             cached_content = ""
         else:
@@ -184,7 +184,7 @@ class SBOMGenerator:
                 history = image.history()
                 if history:
                     creation_time = max(c["Created"] for c in image.history())
-                    source = APT_STRACE_DIR / "apt-strace"
+                    source = DEPTECTIVE_STRACE_DIR / "deptective-strace"
                     min_creation_time = source.stat().st_mtime
                     if creation_time < min_creation_time:
                         # it needs to be rebuilt!
@@ -196,7 +196,7 @@ class SBOMGenerator:
             "This is a one-time operation that may take a few minutes."
         )
         result = self.client.images.build(
-            fileobj=build_context(str(APT_STRACE_DIR), dockerfile),
+            fileobj=build_context(str(DEPTECTIVE_STRACE_DIR), dockerfile),
             dockerfile="./Dockerfile",
             custom_context=True,
             tag=image_name,
@@ -263,7 +263,7 @@ class SBOMGeneratorStep(Container):
         parent: Optional["SBOMGeneratorStep"] = None,
     ):
         if parent is None:
-            p: Union[Image, SBOMGeneratorStep] = generator.apt_strace_image
+            p: Union[Image, SBOMGeneratorStep] = generator.deptective_strace_image
             self.root: SBOMGeneratorStep = self
             self._best_sbom: SBOMGeneratorStep | None = self
         else:
@@ -385,10 +385,12 @@ class SBOMGeneratorStep(Container):
             # open a context so we keep the container running after the `self.run` command
             # so we can query it for missing files
             try:
-                logger.debug(f"apt-strace /log/apt-trace.txt {self.full_command}")
+                logger.debug(
+                    f"deptective-strace /log/deptective.txt {self.full_command}"
+                )
                 exe = self.run(
-                    ["/log/apt-trace.txt", self.command] + list(self.args),
-                    entrypoint="/usr/bin/apt-strace",
+                    ["/log/deptective.txt", self.command] + list(self.args),
+                    entrypoint="/usr/bin/deptective-strace",
                     workdir="/workdir",
                 )
                 self._progress.execute(
@@ -405,7 +407,7 @@ class SBOMGeneratorStep(Container):
             finally:
                 logger.debug(f"Ran, exit code {self.retval}")
             accessed_files: set[str] = set()
-            with open(self._logdir / "apt-trace.txt") as log:  # type: ignore
+            with open(self._logdir / "deptective.txt") as log:  # type: ignore
                 for line in log:
                     try:
                         for arg in lazy_parse_paths(line):

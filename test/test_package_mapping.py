@@ -1,8 +1,8 @@
 import unittest
 
-from apt_trace.apt import Apt
-from apt_trace.cache import SQLCache
-from apt_trace.package_manager import PackagingConfig
+from deptective.apt import Apt
+from deptective.cache import SQLCache
+from deptective.package_manager import PackagingConfig
 
 
 class PackageMapping(unittest.TestCase):
