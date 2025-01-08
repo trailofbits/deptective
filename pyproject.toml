@@ -38,7 +38,7 @@ lint = [
     "mypy",
 ]
 test = ["pytest", "pytest-cov", "coverage[toml]"]
-dev = ["deptective[lint,test]", "twine"]
+dev = ["build", "deptective[lint,test]", "twine"]
 
 [tool.mypy]
 ignore_missing_imports = true
