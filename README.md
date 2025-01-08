@@ -47,7 +47,7 @@ By default, Deptective returns the first satisfying set of dependencies it disco
 smallest satisfying set of dependencies (*i.e.*, it may include unnecessary dependencies). Deptective can enumerate an 
 arbitrary number of results with the `-n` argument.
 
-### Prerequisites
+### Prerequisites 🧩
 
 Depective uses Docker to snapshot installation state, avoid polluting the host system with unnecessary dependencies, and
 investigate dependencies across different distributions.
@@ -60,14 +60,26 @@ architectures can be specified through command line arguments (see `deptective -
 A list of all supported operating systems, releases, and architectures can be enumerated with the `deptective --list` 
 command.
 
-## Contact
+## Caveats and Troubleshooting ⚠️
+
+As mentioned above, Deptective does its analysis within Docker containers. Deptective will automatically copy 
+its current working directory on the host system into `/workdir/` inside the container.
+This means that if the command being inspected references files with absolute paths and/or files that are not in the 
+directory subtree rooted at `$PWD`, the command will likely fail. There are plans to address this in a later version of 
+Deptective.
+
+Deptective builds a package index cache mapping file paths to packages that provide them the first time it is run.
+However, package databases like `apt` are constantly changing, with vulnerable packages being yanked and new packages 
+added. You can force a rebuild of the package index cache by running `deptective --rebuild`.
+
+## Contact 💬
 
 If you'd like to file a bug report or feature request, please use our
 [issues](https://github.com/trailofbits/deptective/issues) page.
 Feel free to contact us or reach out in
 [Empire Hacking](https://slack.empirehacking.nyc/) for help using or extending Deptective.
 
-## License
+## License 📝
 
 This utility was developed by [Trail of Bits](https://www.trailofbits.com/).
 It is licensed under the [GNU Lesser General Public License v3.0](LICENSE).
