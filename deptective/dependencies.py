@@ -34,7 +34,7 @@ from .strace import ParseError, lazy_parse_paths
 logger = getLogger(__name__)
 
 
-DOCKERFILE_DIR = Path(__file__).absolute().parent / "strace"
+DEPTECTIVE_STRACE_DIR = Path(__file__).absolute().parent / "strace"
 
 
 class SBOM:
@@ -184,7 +184,7 @@ class SBOMGenerator:
                 history = image.history()
                 if history:
                     creation_time = max(c["Created"] for c in image.history())
-                    source = DOCKERFILE_DIR / "deptective-strace"
+                    source = DEPTECTIVE_STRACE_DIR / "deptective-strace"
                     min_creation_time = source.stat().st_mtime
                     if creation_time < min_creation_time:
                         # it needs to be rebuilt!
@@ -196,7 +196,7 @@ class SBOMGenerator:
             "This is a one-time operation that may take a few minutes."
         )
         result = self.client.images.build(
-            fileobj=build_context(str(DOCKERFILE_DIR), dockerfile),
+            fileobj=build_context(str(DEPTECTIVE_STRACE_DIR), dockerfile),
             dockerfile="./Dockerfile",
             custom_context=True,
             tag=image_name,
