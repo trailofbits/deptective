@@ -62,15 +62,22 @@ command.
 
 ## Caveats and Troubleshooting ⚠️
 
+### Host System Paths 📂
 As mentioned above, Deptective does its analysis within Docker containers. Deptective will automatically copy 
 its current working directory on the host system into `/workdir/` inside the container.
 This means that if the command being inspected references files with absolute paths and/or files that are not in the 
 directory subtree rooted at `$PWD`, the command will likely fail. There are plans to address this in a later version of 
 Deptective.
 
+### Package Index Cache 📇
 Deptective builds a package index cache mapping file paths to packages that provide them the first time it is run.
 However, package databases like `apt` are constantly changing, with vulnerable packages being yanked and new packages 
 added. You can force a rebuild of the package index cache by running `deptective --rebuild`.
+
+### Path Testing Latency ⏳
+Deptective uses the Docker API to test the existence of files accessed by the target command. On certain Docker 
+configurations—particularly when macOS is the host OS—, this can be very slow. A different, faster mechanism for testing
+files will be added in a future release.
 
 ## Contact 💬
 
