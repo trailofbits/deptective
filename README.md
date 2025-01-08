@@ -8,7 +8,7 @@
 **How?** Deptective runs the command, observing which nonexistent files it attempts to open. If the command fails,
 Deptective attempts to install the dependencies that provide the nonexistent files, and runs the command again.
 If installing a dependency does not change the observable behavior of the command, then Deptective backtracks and tries 
-a different dependency. This process continues until either the command succeeds or there are no more dependencies taht 
+a different dependency. This process continues until either the command succeeds or there are no more dependencies that 
 could provide a missing file.
 
 ## Quickstart 🚀
