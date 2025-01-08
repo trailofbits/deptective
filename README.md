@@ -17,7 +17,7 @@ $ pip3 install deptective
 ```
 
 ### Running it 🏃
-You simply point `deptective` it to your executable/binary/script:
+You simply point `deptective` to any executable, script, or shell command:
 ```console
 $ deptective cat /usr/bin/transmission-gtk
 [10:10:44] INFO     Copying source files to the container...                      dependencies.py:546
@@ -30,13 +30,13 @@ $ deptective cat /usr/bin/transmission-gtk
                     Install with: apt-get install transmission-gtk
 ```
 
-Or, say you download some source code that you need to build with GNU autotools. You can simply run
+Say you download some source code that you need to build with GNU autotools. Simply run
 ```console
 $ deptective ./configure
 ```
 and Deptective will automatically determine all of the requirements necessary to build the code!
 
-If you know the specific file you are missing and you want to see all of the packages that provide taht file, you
+If you know the specific file you are missing and you want to see all of the packages that provide that file, you
 can use the `-s` option:
 ```console
 $ deptective /usr/bin/transmission-gtk
@@ -47,7 +47,7 @@ By default, Deptective returns the first satisfying set of dependencies it disco
 smallest satisfying set of dependencies (*i.e.*, it may include unnecessary dependencies). Deptective can enumerate an 
 arbitrary number of results with the `-n` argument.
 
-### Dependencies
+### Prerequisites
 
 Depective uses Docker to snapshot installation state, avoid polluting the host system with unnecessary dependencies, and
 investigate dependencies across different distributions.
