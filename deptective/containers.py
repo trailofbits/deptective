@@ -1,7 +1,9 @@
 import functools
+from itertools import batched
 import logging
 from pathlib import Path
 import sys
+import time
 from typing import Dict, List, Literal, Optional, TypeVar, Union
 
 if sys.version_info < (3, 11):
@@ -175,35 +177,33 @@ class Container:
         self, *paths: Path | str, progress: Progress | None = None
     ) -> dict[str, bool]:
         paths = {str(p) for p in paths}  # type: ignore
-        ret: dict[str, bool] = {}
         if not paths:
-            return ret
+            return {}
+        ret: dict[str, bool] = {
+            path.strip(): True
+            for path in paths
+        }
         with self:
-            container = self.create(command="")
-            try:
-                if progress is None:
-                    iterator = iter(paths)
-                else:
-                    iterator = progress.track(  # type: ignore
-                        paths, description="checking for missing files…"
-                    )
-                for path in iterator:
-                    ret[str(path)] = (
-                        container.exec_run(
-                            ["ls", path], workdir="/workdir", stdout=False, stderr=False
-                        ).exit_code
-                        == 0
-                    )
-            finally:
-                try:
-                    container.stop()
-                    container.remove(force=True)
-                    logger.debug(
-                        f"Waiting for container {container.id} to be removed..."
-                    )
-                    container.wait(condition="removed")
-                except (NotFound, requests.exceptions.Timeout):
-                    pass
+            unique_paths = list(set(paths))
+            if progress is None:
+                iterator = iter(batched(unique_paths, n=255))
+            else:
+                iterator = progress.track(  # type: ignore
+                    list(batched(unique_paths, n=255)), description="checking for missing files…"
+                )
+            for files in iterator:
+                result = self.run(command=files,
+                                  entrypoint="/usr/bin/deptective-files-exist",
+                                  workdir="/workdir")
+                while not result.done:
+                    time.sleep(0.25)
+                if result.exit_code != 0:
+                    error_message = f"Error running deptective-files-exist:\n\n{result.output.decode("utf-8")}\n\n" \
+                                    f"Inputs: {' '.join(list(set(paths)))})"
+                    logger.error(error_message)
+                    raise RuntimeError(error_message)
+                for line in result.output.splitlines():
+                    ret[line.decode("utf-8").strip()] = False
             return ret
 
     def file_exists(self, path: Path | str) -> bool:
@@ -214,7 +214,12 @@ class Container:
         command: Union[str, List[str]],
         workdir: str = "/workdir",
         entrypoint: str = "/bin/bash",
+        additional_volumes: Optional[Dict[str, Dict[str, str]]] = None,
     ) -> DockerContainer:
+        volumes = self.volumes
+        if additional_volumes is not None:
+            volumes = dict(volumes.items())
+            volumes.update(additional_volumes)
         with self:
             image = self.image.id
 
@@ -224,7 +229,7 @@ class Container:
                 tty=True,
                 read_only=False,
                 detach=True,
-                volumes=self.volumes,
+                volumes=volumes,
                 working_dir=workdir,
                 entrypoint=entrypoint,
             )
