@@ -3,6 +3,7 @@ import logging
 import platform
 import sys
 from collections import defaultdict
+from shutil import rmtree
 from tempfile import TemporaryDirectory
 from textwrap import dedent
 from typing import List, Optional
@@ -300,6 +301,13 @@ def main() -> int:
         else:
             temp_logdir = TemporaryDirectory(prefix="deptective", delete=False, ignore_cleanup_errors=True)
             log_dir = Path(temp_logdir.name)
+
+        if log_dir.exists():
+            if args.force:
+                rmtree(log_dir)
+            else:
+                logger.error(f"The log directory {log_dir!s} already exists; either choose a different output "
+                             f"path, delete the directory, or run again with the `--force` option.")
 
         for i, sbom in enumerate(
             SBOMGenerator(cache=cache, console=console).main(
