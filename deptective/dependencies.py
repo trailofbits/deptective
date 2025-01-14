@@ -184,9 +184,10 @@ class SBOMGenerator:
                 history = image.history()
                 if history:
                     creation_time = max(c["Created"] for c in image.history())
-                    source = DEPTECTIVE_STRACE_DIR / "deptective-strace"
-                    min_creation_time = source.stat().st_mtime
-                    if creation_time < min_creation_time:
+                    if any(
+                        creation_time < (DEPTECTIVE_STRACE_DIR / source).stat().st_mtime
+                        for source in ("deptective-strace", "deptective-files-exist")
+                    ):
                         # it needs to be rebuilt!
                         break
                 return image

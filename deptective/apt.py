@@ -148,6 +148,7 @@ RUN echo "APT::Get::Install-Suggests \"false\";" >> /etc/apt/apt.conf
 RUN mkdir /src/
 COPY --from=builder /usr/bin/strace /usr/bin/strace-native
 COPY deptective-strace /usr/bin/deptective-strace
+COPY deptective-files-exist /usr/bin/deptective-files-exist
 
 ENTRYPOINT ["/usr/bin/deptective-strace"]
 """

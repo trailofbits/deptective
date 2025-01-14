@@ -1,0 +1,9 @@
+#!/usr/bin/bash
+
+set -e
+
+for path in "$@"; do
+  if [ ! -e "$path" ]; then
+    echo "$path"
+  fi
+done
