@@ -3,11 +3,13 @@ import logging
 import platform
 import sys
 from collections import defaultdict
+from tempfile import TemporaryDirectory
 from textwrap import dedent
-from typing import List
+from typing import List, Optional
 
 import requests  # type: ignore
 from docker.errors import DockerException
+from pathlib import Path
 from rich import traceback
 from rich.console import Console
 from rich.logging import RichHandler
@@ -158,6 +160,10 @@ def main() -> int:
     parser.add_argument("command", nargs=argparse.REMAINDER)
 
     log_section = parser.add_argument_group(title="logging")
+    log_section.add_argument("--log-dir", "-d", type=Path, required=False,
+                             help="path to a directory in which to store runtime artifacts and logs")
+    log_section.add_argument("--force", "-f", action="store_true", help="overwrite an existing --log-dir "
+                                                                        "if it already exists")
     log_group = log_section.add_mutually_exclusive_group()
     log_group.add_argument(
         "--log-level",
@@ -264,7 +270,11 @@ def main() -> int:
     # rich has a tendency to gobble stdout, so save the old one before proceeding:
     old_stdout = sys.stdout
 
+    success = False
+    temp_logdir: Optional[TemporaryDirectory] = None
+
     try:
+
         if args.search:
             success = True
             for path in args.command:
@@ -280,7 +290,17 @@ def main() -> int:
                     ),
                     extra={"markup": True},
                 )
-            return success
+            if success:
+                return 0
+            else:
+                return 1
+
+        if hasattr(args, "log_dir") and args.log_dir:
+            log_dir: Path = args.log_dir
+        else:
+            temp_logdir = TemporaryDirectory(prefix="deptective", delete=False, ignore_cleanup_errors=True)
+            log_dir = Path(temp_logdir.name)
+
         for i, sbom in enumerate(
             SBOMGenerator(cache=cache, console=console).main(
                 args.command[0], *args.command[1:]
@@ -312,6 +332,8 @@ def main() -> int:
 
             if not args.all and 0 < args.num_results and i == args.num_results - 1:
                 break
+
+        success = True
     except DockerException as e:
         msg = str(e)
         if "ConnectionRefusedError" in msg or "Connection aborted" in msg:
@@ -338,6 +360,8 @@ def main() -> int:
         logger.error(str(e))
         if isinstance(e, PackageResolutionError):
             if e.partial_sbom:
+                with open(log_dir / "most_promising_sbom.txt", "w") as f:
+                    f.write("\n".join(map(str, e.partial_sbom)))
                 console.print(
                     Panel(
                         " ".join(
@@ -354,6 +378,8 @@ def main() -> int:
                 and e.command_output
                 and e.command_output_str
             ):
+                with open(log_dir / "final_output.txt", "wb") as f:
+                    f.write(e.command_output)
                 console.print(
                     Panel(
                         e.command_output_str,
@@ -364,10 +390,16 @@ def main() -> int:
     except KeyboardInterrupt:
         console.show_cursor()
         return 1
+    finally:
+        if not success and temp_logdir is not None:
+            old_stdout.write(f"\n\nA log was saved to {temp_logdir.name!s}\n")
 
     for sbom in results:
         old_stdout.write(str(sbom))
         old_stdout.write("\n")
     old_stdout.flush()
+
+    if temp_logdir is not None:
+        temp_logdir.cleanup()
 
     return 0

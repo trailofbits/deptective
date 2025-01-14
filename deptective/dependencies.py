@@ -377,6 +377,7 @@ class SBOMGeneratorStep(Container):
             f" files {list(self.missing_files_without_duplicates)!r}, none of which are"
             f" satisfied by {self.generator.cache.package_manager.NAME} packages",
             command_output=self.command_output,
+            partial_sbom=self.best_sbom.sbom
         )
 
     def find_feasible_sboms(self) -> Iterator[SBOM]:
