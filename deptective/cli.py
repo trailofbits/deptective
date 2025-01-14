@@ -299,15 +299,16 @@ def main() -> int:
         if hasattr(args, "log_dir") and args.log_dir:
             log_dir: Path = args.log_dir
         else:
-            temp_logdir = TemporaryDirectory(prefix="deptective", delete=False, ignore_cleanup_errors=True)
+            temp_logdir = TemporaryDirectory(prefix="deptective-", delete=False, ignore_cleanup_errors=True)
             log_dir = Path(temp_logdir.name)
 
         if log_dir.exists():
             if args.force:
                 rmtree(log_dir)
-            else:
+            elif temp_logdir is None:
                 logger.error(f"The log directory {log_dir!s} already exists; either choose a different output "
                              f"path, delete the directory, or run again with the `--force` option.")
+                return 1
 
         for i, sbom in enumerate(
             SBOMGenerator(cache=cache, console=console).main(
