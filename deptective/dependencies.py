@@ -211,47 +211,58 @@ class SBOMGenerator:
     def main(self, command: str, *args: str) -> Iterator[SBOM]:
         with SBOMGeneratorStep(self, command, args) as step:
             yielded = False
+            error: Exception | KeyboardInterrupt | None = None
+            best_output: bytes | None = None
+            best_sbom: SBOM | None = None
             try:
                 for sbom in step.find_feasible_sboms():
                     self.feasible.add(sbom)
                     yield sbom
                     yielded = True
             except (Exception, KeyboardInterrupt) as e:
-                if sys.stdin.isatty() and not yielded:
-                    if not isinstance(e, KeyboardInterrupt):
-                        logger.error(str(e))
-                        prompt = "Would you like to see the most promising SBOM before the error is handled?"
-                    else:
-                        prompt = "Would you like to see the most promising SBOM before exiting?"
-                    if Confirm.ask(prompt, console=self.console):
+                best_output = step.command_output
+                error = e
+                best_sbom = step.best_sbom.sbom
+
+        if error is None:
+            return
+
+        if sys.stdin.isatty() and not yielded and best_sbom is not None:
+            if not isinstance(error, KeyboardInterrupt):
+                logger.error(str(error))
+                prompt = "Would you like to see the most promising SBOM before the error is handled?"
+            else:
+                prompt = "Would you like to see the most promising SBOM before exiting?"
+            if Confirm.ask(prompt, console=self.console):
+                self.console.print(
+                    Panel(
+                        " ".join(
+                            (
+                                f":floppy_disk: [bold italic]{p}[/bold italic]"
+                                for p in best_sbom
+                            )
+                        ),
+                        title="Most Promising Partial SBOM",
+                    )
+                )
+                if best_output:
+                    try:
+                        cmd_output_str = best_output.decode(
+                            "utf-8"
+                        )
+                    except UnicodeDecodeError:
+                        cmd_output_str = repr(best_output)[
+                            2:-1
+                        ]
+                    if cmd_output_str:
                         self.console.print(
                             Panel(
-                                " ".join(
-                                    (
-                                        f":floppy_disk: [bold italic]{p}[/bold italic]"
-                                        for p in step.best_sbom.sbom
-                                    )
-                                ),
-                                title="Most Promising Partial SBOM",
+                                cmd_output_str,
+                                title=f"`{command} {' '.join(args)}` Output",
                             )
                         )
-                        if step.best_sbom.command_output:
-                            try:
-                                cmd_output_str = step.best_sbom.command_output.decode(
-                                    "utf-8"
-                                )
-                            except UnicodeDecodeError:
-                                cmd_output_str = repr(step.best_sbom.command_output)[
-                                    2:-1
-                                ]
-                            if cmd_output_str:
-                                self.console.print(
-                                    Panel(
-                                        cmd_output_str,
-                                        title=f"`{command} {' '.join(args)}` Output",
-                                    )
-                                )
-                raise e
+        if not isinstance(error, KeyboardInterrupt):
+            raise e
 
 
 class SBOMGeneratorStep(Container):
