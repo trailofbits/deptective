@@ -1,6 +1,7 @@
 import argparse
 import logging
 import platform
+import shlex
 import sys
 from collections import defaultdict
 from shutil import rmtree
@@ -134,13 +135,19 @@ def main() -> int:
         help="forces a rebuild of the package cache "
         "(requires an Internet connection)",
     )
-    parser.add_argument(
+    search_group = parser.add_mutually_exclusive_group()
+    search_group.add_argument(
         "--search",
         "-s",
         action="store_true",
         help="instead of treating the final argument as a command to run, treat it as a path and list "
         "all packages that provide that file",
     )
+    search_group.add_argument("--multi-step", "-m", action="store_true",
+                              help="instead of reading the command from the command line, take a path to a file "
+                                   "containing one command per line; this can speed up multi-command dependency "
+                                   "resolutions. For example, `deptective --multi-step -n 1 steps.sh` will read the "
+                                   "`steps.sh` file and run the commands on each line.")
     results_group = parser.add_mutually_exclusive_group()
     results_group.add_argument(
         "--num-results",
@@ -310,11 +317,26 @@ def main() -> int:
                              f"path, delete the directory, or run again with the `--force` option.")
                 return 1
 
-        for i, sbom in enumerate(
-            SBOMGenerator(cache=cache, console=console).main(
-                args.command[0], *args.command[1:]
-            )
-        ):
+        generator = SBOMGenerator(cache=cache, console=console)
+
+        if args.multi_step:
+            commands: list[list[str]] = []
+            for path in args.command:
+                try:
+                    with open(path, "r") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith("#"):
+                                continue
+                            commands.append(shlex.split(line))
+                except (FileNotFoundError, IOError) as e:
+                    logger.error(f"Could not open multi-step file {path}: {e!s}")
+                    return 1
+            sbom_iter = generator.multi_step(*commands)
+        else:
+            sbom_iter = generator.main(args.command[0], *args.command[1:])
+
+        for i, sbom in enumerate(sbom_iter):
             if not old_stdout.isatty():
                 old_stdout.write(str(sbom))
                 old_stdout.write("\n")
