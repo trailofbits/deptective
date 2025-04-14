@@ -143,11 +143,15 @@ def main() -> int:
         help="instead of treating the final argument as a command to run, treat it as a path and list "
         "all packages that provide that file",
     )
-    search_group.add_argument("--multi-step", "-m", action="store_true",
-                              help="instead of reading the command from the command line, take a path to a file "
-                                   "containing one command per line; this can speed up multi-command dependency "
-                                   "resolutions. For example, `deptective --multi-step -n 1 steps.sh` will read the "
-                                   "`steps.sh` file and run the commands on each line.")
+    search_group.add_argument(
+        "--multi-step",
+        "-m",
+        action="store_true",
+        help="instead of reading the command from the command line, take a path to a file "
+        "containing one command per line; this can speed up multi-command dependency "
+        "resolutions. For example, `deptective --multi-step -n 1 steps.sh` will read the "
+        "`steps.sh` file and run the commands on each line.",
+    )
     results_group = parser.add_mutually_exclusive_group()
     results_group.add_argument(
         "--num-results",
@@ -168,10 +172,19 @@ def main() -> int:
     parser.add_argument("command", nargs=argparse.REMAINDER)
 
     log_section = parser.add_argument_group(title="logging")
-    log_section.add_argument("--log-dir", "-d", type=Path, required=False,
-                             help="path to a directory in which to store runtime artifacts and logs")
-    log_section.add_argument("--force", "-f", action="store_true", help="overwrite an existing --log-dir "
-                                                                        "if it already exists")
+    log_section.add_argument(
+        "--log-dir",
+        "-d",
+        type=Path,
+        required=False,
+        help="path to a directory in which to store runtime artifacts and logs",
+    )
+    log_section.add_argument(
+        "--force",
+        "-f",
+        action="store_true",
+        help="overwrite an existing --log-dir " "if it already exists",
+    )
     log_group = log_section.add_mutually_exclusive_group()
     log_group.add_argument(
         "--log-level",
@@ -306,15 +319,19 @@ def main() -> int:
         if hasattr(args, "log_dir") and args.log_dir:
             log_dir: Path = args.log_dir
         else:
-            temp_logdir = TemporaryDirectory(prefix="deptective-", delete=False, ignore_cleanup_errors=True)
+            temp_logdir = TemporaryDirectory(
+                prefix="deptective-", delete=False, ignore_cleanup_errors=True
+            )
             log_dir = Path(temp_logdir.name)
 
         if log_dir.exists():
             if args.force:
                 rmtree(log_dir)
             elif temp_logdir is None:
-                logger.error(f"The log directory {log_dir!s} already exists; either choose a different output "
-                             f"path, delete the directory, or run again with the `--force` option.")
+                logger.error(
+                    f"The log directory {log_dir!s} already exists; either choose a different output "
+                    f"path, delete the directory, or run again with the `--force` option."
+                )
                 return 1
 
         generator = SBOMGenerator(cache=cache, console=console)

@@ -210,38 +210,57 @@ class SBOMGenerator:
 
     def multi_step(self, *commands: list[str]) -> Iterator[SBOM]:
         first_step = SBOMGeneratorStep(self, commands[0][0], commands[0][1:])
-        commands_task = first_step.progress.add_task(description=":computer: commands", total=len(commands))
+        commands_task = first_step.progress.add_task(
+            description=":computer: commands", total=len(commands)
+        )
         with first_step as step:
             try:
-                for sbom, _ in self._multi_step(*commands, prev_step=step, commands_task=commands_task):
+                for sbom, _ in self._multi_step(
+                    *commands, prev_step=step, commands_task=commands_task
+                ):
                     yield sbom
             finally:
                 first_step.progress.remove_task(commands_task)
 
-    def _multi_step(self, *commands: list[str], prev_step: "SBOMGeneratorStep", commands_task) \
-            -> Iterator[tuple[SBOM, "SBOMGeneratorStep"]]:
+    def _multi_step(
+        self, *commands: list[str], prev_step: "SBOMGeneratorStep", commands_task
+    ) -> Iterator[tuple[SBOM, "SBOMGeneratorStep"]]:
         if not commands:
             return
         logger.info(f"Working on command `{' '.join(commands[0])}`")
         with prev_step as step:
-            for i, (sbom, sbom_step) in enumerate(self._main(commands[0][0], *commands[0][1:], existing_step=step)):
-                if i == 0:
-                    prev_step.progress.update(commands_task, advance=1)
-                if len(commands) == 1:
-                    # we are done!
-                    yield sbom, sbom_step
-                else:
-                    next_step = SBOMGeneratorStep(self, commands[1][0], commands[1][1:], parent=sbom_step)
-                    for final_sbom, final_step in self._multi_step(*commands[1:], prev_step=next_step,
-                                                                   commands_task=commands_task):
-                        yield final_sbom, final_step
+            for i, (sbom, sbom_step) in enumerate(
+                self._main(commands[0][0], *commands[0][1:], existing_step=step)
+            ):
+                with sbom_step:
+                    if i == 0:
+                        prev_step.progress.update(commands_task, advance=1)
+                    if len(commands) == 1:
+                        # we are done!
+                        yield sbom, sbom_step
+                    else:
+                        next_step = SBOMGeneratorStep(
+                            self, commands[1][0], commands[1][1:], parent=sbom_step
+                        )
+                        with next_step:
+                            for final_sbom, final_step in self._multi_step(
+                                *commands[1:],
+                                prev_step=next_step,
+                                commands_task=commands_task,
+                            ):
+                                with final_step:
+                                    yield final_sbom, final_step
 
     def main(self, command: str, *args: str) -> Iterator[SBOM]:
         for sbom, _ in self._main(command, *args):
             yield sbom
 
-    def _main(self, command: str, *args: str, existing_step: Optional["SBOMGeneratorStep"] = None) \
-            -> Iterator[tuple[SBOM, "SBOMGeneratorStep"]]:
+    def _main(
+        self,
+        command: str,
+        *args: str,
+        existing_step: Optional["SBOMGeneratorStep"] = None,
+    ) -> Iterator[tuple[SBOM, "SBOMGeneratorStep"]]:
         if existing_step is None:
             existing_step = SBOMGeneratorStep(self, command, args)
         with existing_step as step:
@@ -282,13 +301,9 @@ class SBOMGenerator:
                 )
                 if best_output:
                     try:
-                        cmd_output_str = best_output.decode(
-                            "utf-8"
-                        )
+                        cmd_output_str = best_output.decode("utf-8")
                     except UnicodeDecodeError:
-                        cmd_output_str = repr(best_output)[
-                            2:-1
-                        ]
+                        cmd_output_str = repr(best_output)[2:-1]
                     if cmd_output_str:
                         self.console.print(
                             Panel(
@@ -297,7 +312,7 @@ class SBOMGenerator:
                             )
                         )
         if not isinstance(error, KeyboardInterrupt):
-            raise e
+            raise error
 
 
 class SBOMGeneratorStep(Container):
@@ -424,7 +439,7 @@ class SBOMGeneratorStep(Container):
             f" files {list(self.missing_files_without_duplicates)!r}, none of which are"
             f" satisfied by {self.generator.cache.package_manager.NAME} packages",
             command_output=self.command_output,
-            partial_sbom=self.best_sbom.sbom
+            partial_sbom=self.best_sbom.sbom,
         )
 
     def find_feasible_sboms(self) -> Iterator[tuple[SBOM, "SBOMGeneratorStep"]]:
@@ -514,7 +529,8 @@ class SBOMGeneratorStep(Container):
             self._register_infeasible()  # this always raises an exception
         yielded = False
         last_error: Optional[SBOMGenerationError] = None
-        self.progress.update(self._task, total=len(packages_to_try))  # type: ignore
+        if self._task is not None:
+            self.progress.update(self._task, total=len(packages_to_try))  # type: ignore
         for _, _, package in sorted(
             ((count, idx, name) for name, (count, idx) in packages_to_try.items()),
             reverse=True,
@@ -545,6 +561,8 @@ class SBOMGeneratorStep(Container):
                 with step as substep:
                     try:
                         for sbom, ss in substep.find_feasible_sboms():
+                            if not yielded and self._task is not None:
+                                self.progress.update(self._task, advance=1)  # type: ignore
                             yield SBOM((package,)) + sbom, ss
                             yielded = True
                     except SBOMGenerationError:
@@ -565,7 +583,8 @@ class SBOMGeneratorStep(Container):
                     logger.warning(f"output: {e.output!r}")
                 continue
             finally:
-                self.progress.update(self._task, advance=1)  # type: ignore
+                if not yielded and self._task is not None:
+                    self.progress.update(self._task, advance=1)  # type: ignore
         if not yielded:
             if last_error is not None:
                 raise last_error
@@ -631,12 +650,17 @@ class SBOMGeneratorStep(Container):
                     f"Error installing {' '.join(self.preinstall)}: {output}", output
                 )
 
+    def complete_task(self):
+        if self._task is not None:
+            self.progress.remove_task(self._task)  # type: ignore
+            self._task = None
+
     def _cleanup(self):
         log_tmpdir: TemporaryDirectory = self._log_tmpdir  # type: ignore
         self._logdir = None
         self._log_tmpdir = None
         log_tmpdir.__exit__(None, None, None)
-        self.progress.remove_task(self._task)  # type: ignore
+        self.complete_task()
         if self.level == 0:
             self.progress.__exit__(None, None, None)
 

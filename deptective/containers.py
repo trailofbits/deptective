@@ -176,30 +176,32 @@ class Container:
     def files_exist(
         self, *paths: Path | str, progress: Progress | None = None
     ) -> dict[str, bool]:
-        paths = {str(p) for p in paths}  # type: ignore
-        if not paths:
+        str_paths: set[str] = {str(p) for p in paths}  # type: ignore
+        if not str_paths:
             return {}
-        ret: dict[str, bool] = {
-            path.strip(): True
-            for path in paths
-        }
+        ret: dict[str, bool] = {path.strip(): True for path in str_paths}
         with self:
-            unique_paths = list(set(paths))
+            unique_paths = list(str_paths)
             if progress is None:
                 iterator = iter(batched(unique_paths, n=255))
             else:
                 iterator = progress.track(  # type: ignore
-                    list(batched(unique_paths, n=255)), description="checking for missing files…"
+                    list(batched(unique_paths, n=255)),
+                    description="checking for missing files…",
                 )
             for files in iterator:
-                result = self.run(command=files,
-                                  entrypoint="/usr/bin/deptective-files-exist",
-                                  workdir="/workdir")
+                result = self.run(
+                    command=list(files),
+                    entrypoint="/usr/bin/deptective-files-exist",
+                    workdir="/workdir",
+                )
                 while not result.done:
                     time.sleep(0.25)
                 if result.exit_code != 0:
-                    error_message = f"Error running deptective-files-exist:\n\n{result.output.decode("utf-8")}\n\n" \
-                                    f"Inputs: {' '.join(list(set(paths)))})"
+                    error_message = (
+                        f"Error running deptective-files-exist:\n\n{result.output.decode("utf-8")}\n\n"
+                        f"Inputs: {' '.join(unique_paths)})"
+                    )
                     logger.error(error_message)
                     raise RuntimeError(error_message)
                 for line in result.output.splitlines():
