@@ -62,6 +62,21 @@ command.
 
 ## Caveats and Troubleshooting ⚠️
 
+### Log Directory for Debugging 📊
+Deptective can save logs and runtime artifacts to a specified directory using the `--log-dir` option. This is especially useful for debugging failed dependency resolution attempts, as it will preserve information about partial results and command outputs.
+
+```console
+$ deptective --log-dir ./debug-logs ./configure
+```
+
+If the log directory already exists, you can use the `--force` option to overwrite it:
+
+```console
+$ deptective --log-dir ./debug-logs --force ./configure
+```
+
+If no log directory is specified, Deptective will create a temporary directory and report its location when errors occur.
+
 ### Host System Paths 📂
 As mentioned above, Deptective does its analysis within Docker containers. Deptective will automatically copy 
 its current working directory on the host system into `/workdir/` inside the container.

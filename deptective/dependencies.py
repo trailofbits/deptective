@@ -184,9 +184,10 @@ class SBOMGenerator:
                 history = image.history()
                 if history:
                     creation_time = max(c["Created"] for c in image.history())
-                    source = DEPTECTIVE_STRACE_DIR / "deptective-strace"
-                    min_creation_time = source.stat().st_mtime
-                    if creation_time < min_creation_time:
+                    if any(
+                        creation_time < (DEPTECTIVE_STRACE_DIR / source).stat().st_mtime
+                        for source in ("deptective-strace", "deptective-files-exist")
+                    ):
                         # it needs to be rebuilt!
                         break
                 return image
@@ -207,50 +208,111 @@ class SBOMGenerator:
             f.write(dockerfile)
         return result
 
-    def main(self, command: str, *args: str) -> Iterator[SBOM]:
-        with SBOMGeneratorStep(self, command, args) as step:
-            yielded = False
+    def multi_step(self, *commands: list[str]) -> Iterator[SBOM]:
+        first_step = SBOMGeneratorStep(self, commands[0][0], commands[0][1:])
+        commands_task = first_step.progress.add_task(
+            description=":computer: commands", total=len(commands)
+        )
+        with first_step as step:
             try:
-                for sbom in step.find_feasible_sboms():
-                    self.feasible.add(sbom)
+                for sbom, _ in self._multi_step(
+                    *commands, prev_step=step, commands_task=commands_task
+                ):
                     yield sbom
+            finally:
+                first_step.progress.remove_task(commands_task)
+
+    def _multi_step(
+        self, *commands: list[str], prev_step: "SBOMGeneratorStep", commands_task
+    ) -> Iterator[tuple[SBOM, "SBOMGeneratorStep"]]:
+        if not commands:
+            return
+        logger.info(f"Working on command `{' '.join(commands[0])}`")
+        with prev_step as step:
+            for i, (sbom, sbom_step) in enumerate(
+                self._main(commands[0][0], *commands[0][1:], existing_step=step)
+            ):
+                with sbom_step:
+                    if i == 0:
+                        prev_step.progress.update(commands_task, advance=1)
+                    if len(commands) == 1:
+                        # we are done!
+                        yield sbom, sbom_step
+                    else:
+                        next_step = SBOMGeneratorStep(
+                            self, commands[1][0], commands[1][1:], parent=sbom_step
+                        )
+                        with next_step:
+                            for final_sbom, final_step in self._multi_step(
+                                *commands[1:],
+                                prev_step=next_step,
+                                commands_task=commands_task,
+                            ):
+                                with final_step:
+                                    yield final_sbom, final_step
+
+    def main(self, command: str, *args: str) -> Iterator[SBOM]:
+        for sbom, _ in self._main(command, *args):
+            yield sbom
+
+    def _main(
+        self,
+        command: str,
+        *args: str,
+        existing_step: Optional["SBOMGeneratorStep"] = None,
+    ) -> Iterator[tuple[SBOM, "SBOMGeneratorStep"]]:
+        if existing_step is None:
+            existing_step = SBOMGeneratorStep(self, command, args)
+        with existing_step as step:
+            yielded = False
+            error: Exception | KeyboardInterrupt | None = None
+            best_output: bytes | None = None
+            best_sbom: SBOM | None = None
+            try:
+                for sbom, sbom_step in step.find_feasible_sboms():
+                    self.feasible.add(sbom)
+                    yield sbom, sbom_step
                     yielded = True
             except (Exception, KeyboardInterrupt) as e:
-                if sys.stdin.isatty() and not yielded:
-                    if not isinstance(e, KeyboardInterrupt):
-                        logger.error(str(e))
-                        prompt = "Would you like to see the most promising SBOM before the error is handled?"
-                    else:
-                        prompt = "Would you like to see the most promising SBOM before exiting?"
-                    if Confirm.ask(prompt, console=self.console):
+                best_output = step.command_output
+                error = e
+                best_sbom = step.best_sbom.sbom
+
+        if error is None:
+            return
+
+        if sys.stdin.isatty() and not yielded and best_sbom is not None:
+            if not isinstance(error, KeyboardInterrupt):
+                logger.error(str(error))
+                prompt = "Would you like to see the most promising SBOM before the error is handled?"
+            else:
+                prompt = "Would you like to see the most promising SBOM before exiting?"
+            if Confirm.ask(prompt, console=self.console):
+                self.console.print(
+                    Panel(
+                        " ".join(
+                            (
+                                f":floppy_disk: [bold italic]{p}[/bold italic]"
+                                for p in best_sbom
+                            )
+                        ),
+                        title="Most Promising Partial SBOM",
+                    )
+                )
+                if best_output:
+                    try:
+                        cmd_output_str = best_output.decode("utf-8")
+                    except UnicodeDecodeError:
+                        cmd_output_str = repr(best_output)[2:-1]
+                    if cmd_output_str:
                         self.console.print(
                             Panel(
-                                " ".join(
-                                    (
-                                        f":floppy_disk: [bold italic]{p}[/bold italic]"
-                                        for p in step.best_sbom.sbom
-                                    )
-                                ),
-                                title="Most Promising Partial SBOM",
+                                cmd_output_str,
+                                title=f"`{command} {' '.join(args)}` Output",
                             )
                         )
-                        if step.best_sbom.command_output:
-                            try:
-                                cmd_output_str = step.best_sbom.command_output.decode(
-                                    "utf-8"
-                                )
-                            except UnicodeDecodeError:
-                                cmd_output_str = repr(step.best_sbom.command_output)[
-                                    2:-1
-                                ]
-                            if cmd_output_str:
-                                self.console.print(
-                                    Panel(
-                                        cmd_output_str,
-                                        title=f"`{command} {' '.join(args)}` Output",
-                                    )
-                                )
-                raise e
+        if not isinstance(error, KeyboardInterrupt):
+            raise error
 
 
 class SBOMGeneratorStep(Container):
@@ -280,13 +342,13 @@ class SBOMGeneratorStep(Container):
         self.retval: int = -1
         if parent is not None:
             self.tried_packages: Set[str] = parent.tried_packages | parent.preinstall
-            self._progress: ContainerProgress = parent._progress
+            self.progress: ContainerProgress = parent.progress
             if self.level > self.best_sbom.level:
                 self.root._best_sbom = self
         else:
             self.level = 0
             self.tried_packages = set()
-            self._progress = ContainerProgress(
+            self.progress = ContainerProgress(
                 *Progress.get_default_columns(),
                 MofNCompleteColumn(),
                 console=generator.console,
@@ -321,8 +383,8 @@ class SBOMGeneratorStep(Container):
 
     def _missing_files(self, container: Container, *paths: Path | str) -> Set[str]:
         to_check: Set[str] = {str(p) for p in paths}
-        progress = Progress(transient=True, console=self._progress.console)
-        self._progress.file_progress = progress
+        progress = Progress(transient=True, console=self.progress.console)
+        self.progress.file_progress = progress
         try:
             file_existence = container.files_exist(
                 *(to_check - set(self.missing_files)), progress=progress
@@ -337,7 +399,7 @@ class SBOMGeneratorStep(Container):
                 else:
                     logger.debug("No files accessed.")
         finally:
-            self._progress.file_progress = None
+            self.progress.file_progress = None
         return {p for p, exists in file_existence.items() if not exists}
 
     @property
@@ -377,9 +439,10 @@ class SBOMGeneratorStep(Container):
             f" files {list(self.missing_files_without_duplicates)!r}, none of which are"
             f" satisfied by {self.generator.cache.package_manager.NAME} packages",
             command_output=self.command_output,
+            partial_sbom=self.best_sbom.sbom,
         )
 
-    def find_feasible_sboms(self) -> Iterator[SBOM]:
+    def find_feasible_sboms(self) -> Iterator[tuple[SBOM, "SBOMGeneratorStep"]]:
         logger.debug(f"Running step {self.level}...")
         with self:
             # open a context so we keep the container running after the `self.run` command
@@ -393,14 +456,14 @@ class SBOMGeneratorStep(Container):
                     entrypoint="/usr/bin/deptective-strace",
                     workdir="/workdir",
                 )
-                self._progress.execute(
+                self.progress.execute(
                     exe,
                     title=self.full_command,
                     subtitle=self.sbom.rich_str,
                     scrollback=5,
                 )
                 while not exe.done:
-                    self._progress.refresh()
+                    self.progress.refresh()
                     time.sleep(0.5)
                 self.retval = exe.exit_code
                 self.command_output = exe.output
@@ -428,7 +491,7 @@ class SBOMGeneratorStep(Container):
                         continue
                 self.missing_files.append(path)
         if self.retval == 0:
-            yield SBOM()
+            yield SBOM(), self
             return
         elif not self.missing_files:
             raise NonZeroExit(
@@ -466,7 +529,8 @@ class SBOMGeneratorStep(Container):
             self._register_infeasible()  # this always raises an exception
         yielded = False
         last_error: Optional[SBOMGenerationError] = None
-        self._progress.update(self._task, total=len(packages_to_try))  # type: ignore
+        if self._task is not None:
+            self.progress.update(self._task, total=len(packages_to_try))  # type: ignore
         for _, _, package in sorted(
             ((count, idx, name) for name, (count, idx) in packages_to_try.items()),
             reverse=True,
@@ -496,8 +560,10 @@ class SBOMGeneratorStep(Container):
                     continue
                 with step as substep:
                     try:
-                        for sbom in substep.find_feasible_sboms():
-                            yield SBOM((package,)) + sbom
+                        for sbom, ss in substep.find_feasible_sboms():
+                            if not yielded and self._task is not None:
+                                self.progress.update(self._task, advance=1)  # type: ignore
+                            yield SBOM((package,)) + sbom, ss
                             yielded = True
                     except SBOMGenerationError:
                         last_error = last_error
@@ -517,7 +583,8 @@ class SBOMGeneratorStep(Container):
                     logger.warning(f"output: {e.output!r}")
                 continue
             finally:
-                self._progress.update(self._task, advance=1)  # type: ignore
+                if not yielded and self._task is not None:
+                    self.progress.update(self._task, advance=1)  # type: ignore
         if not yielded:
             if last_error is not None:
                 raise last_error
@@ -583,19 +650,24 @@ class SBOMGeneratorStep(Container):
                     f"Error installing {' '.join(self.preinstall)}: {output}", output
                 )
 
+    def complete_task(self):
+        if self._task is not None:
+            self.progress.remove_task(self._task)  # type: ignore
+            self._task = None
+
     def _cleanup(self):
         log_tmpdir: TemporaryDirectory = self._log_tmpdir  # type: ignore
         self._logdir = None
         self._log_tmpdir = None
         log_tmpdir.__exit__(None, None, None)
-        self._progress.remove_task(self._task)  # type: ignore
+        self.complete_task()
         if self.level == 0:
-            self._progress.__exit__(None, None, None)
+            self.progress.__exit__(None, None, None)
 
     def start(self):
         assert self._logdir is None
         if self.level == 0:
-            self._progress.__enter__()
+            self.progress.__enter__()
         if not self.preinstall:
             task_name = f":magnifying_glass_tilted_right: {self.command}"
         else:
@@ -603,7 +675,7 @@ class SBOMGeneratorStep(Container):
                 f"[blue]{self.level}[/blue] :floppy_disk: [bold"
                 f" italic]{', '.join(self.preinstall)}"
             )
-        self._task = self._progress.add_task(task_name, total=None)
+        self._task = self.progress.add_task(task_name, total=None)
         self._log_tmpdir = TemporaryDirectory()
         self._logdir = Path(self._log_tmpdir.name).absolute()
         try:

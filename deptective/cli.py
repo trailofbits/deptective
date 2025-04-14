@@ -1,13 +1,17 @@
 import argparse
 import logging
 import platform
+import shlex
 import sys
 from collections import defaultdict
+from shutil import rmtree
+from tempfile import TemporaryDirectory
 from textwrap import dedent
-from typing import List
+from typing import List, Optional
 
 import requests  # type: ignore
 from docker.errors import DockerException
+from pathlib import Path
 from rich import traceback
 from rich.console import Console
 from rich.logging import RichHandler
@@ -131,12 +135,22 @@ def main() -> int:
         help="forces a rebuild of the package cache "
         "(requires an Internet connection)",
     )
-    parser.add_argument(
+    search_group = parser.add_mutually_exclusive_group()
+    search_group.add_argument(
         "--search",
         "-s",
         action="store_true",
         help="instead of treating the final argument as a command to run, treat it as a path and list "
         "all packages that provide that file",
+    )
+    search_group.add_argument(
+        "--multi-step",
+        "-m",
+        action="store_true",
+        help="instead of reading the command from the command line, take a path to a file "
+        "containing one command per line; this can speed up multi-command dependency "
+        "resolutions. For example, `deptective --multi-step -n 1 steps.sh` will read the "
+        "`steps.sh` file and run the commands on each line.",
     )
     results_group = parser.add_mutually_exclusive_group()
     results_group.add_argument(
@@ -158,6 +172,19 @@ def main() -> int:
     parser.add_argument("command", nargs=argparse.REMAINDER)
 
     log_section = parser.add_argument_group(title="logging")
+    log_section.add_argument(
+        "--log-dir",
+        "-d",
+        type=Path,
+        required=False,
+        help="path to a directory in which to store runtime artifacts and logs",
+    )
+    log_section.add_argument(
+        "--force",
+        "-f",
+        action="store_true",
+        help="overwrite an existing --log-dir " "if it already exists",
+    )
     log_group = log_section.add_mutually_exclusive_group()
     log_group.add_argument(
         "--log-level",
@@ -264,7 +291,11 @@ def main() -> int:
     # rich has a tendency to gobble stdout, so save the old one before proceeding:
     old_stdout = sys.stdout
 
+    success = False
+    temp_logdir: Optional[TemporaryDirectory] = None
+
     try:
+
         if args.search:
             success = True
             for path in args.command:
@@ -280,12 +311,49 @@ def main() -> int:
                     ),
                     extra={"markup": True},
                 )
-            return success
-        for i, sbom in enumerate(
-            SBOMGenerator(cache=cache, console=console).main(
-                args.command[0], *args.command[1:]
+            if success:
+                return 0
+            else:
+                return 1
+
+        if hasattr(args, "log_dir") and args.log_dir:
+            log_dir: Path = args.log_dir
+        else:
+            temp_logdir = TemporaryDirectory(
+                prefix="deptective-", delete=False, ignore_cleanup_errors=True
             )
-        ):
+            log_dir = Path(temp_logdir.name)
+
+        if log_dir.exists():
+            if args.force:
+                rmtree(log_dir)
+            elif temp_logdir is None:
+                logger.error(
+                    f"The log directory {log_dir!s} already exists; either choose a different output "
+                    f"path, delete the directory, or run again with the `--force` option."
+                )
+                return 1
+
+        generator = SBOMGenerator(cache=cache, console=console)
+
+        if args.multi_step:
+            commands: list[list[str]] = []
+            for path in args.command:
+                try:
+                    with open(path, "r") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith("#"):
+                                continue
+                            commands.append(shlex.split(line))
+                except (FileNotFoundError, IOError) as e:
+                    logger.error(f"Could not open multi-step file {path}: {e!s}")
+                    return 1
+            sbom_iter = generator.multi_step(*commands)
+        else:
+            sbom_iter = generator.main(args.command[0], *args.command[1:])
+
+        for i, sbom in enumerate(sbom_iter):
             if not old_stdout.isatty():
                 old_stdout.write(str(sbom))
                 old_stdout.write("\n")
@@ -312,6 +380,8 @@ def main() -> int:
 
             if not args.all and 0 < args.num_results and i == args.num_results - 1:
                 break
+
+        success = True
     except DockerException as e:
         msg = str(e)
         if "ConnectionRefusedError" in msg or "Connection aborted" in msg:
@@ -338,6 +408,8 @@ def main() -> int:
         logger.error(str(e))
         if isinstance(e, PackageResolutionError):
             if e.partial_sbom:
+                with open(log_dir / "most_promising_sbom.txt", "w") as f:
+                    f.write("\n".join(map(str, e.partial_sbom)))
                 console.print(
                     Panel(
                         " ".join(
@@ -354,6 +426,8 @@ def main() -> int:
                 and e.command_output
                 and e.command_output_str
             ):
+                with open(log_dir / "final_output.txt", "wb") as f:
+                    f.write(e.command_output)
                 console.print(
                     Panel(
                         e.command_output_str,
@@ -364,10 +438,16 @@ def main() -> int:
     except KeyboardInterrupt:
         console.show_cursor()
         return 1
+    finally:
+        if not success and temp_logdir is not None:
+            old_stdout.write(f"\n\nA log was saved to {temp_logdir.name!s}\n")
 
     for sbom in results:
         old_stdout.write(str(sbom))
         old_stdout.write("\n")
     old_stdout.flush()
+
+    if temp_logdir is not None:
+        temp_logdir.cleanup()
 
     return 0
