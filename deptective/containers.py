@@ -199,7 +199,7 @@ class Container:
                     time.sleep(0.25)
                 if result.exit_code != 0:
                     error_message = (
-                        f"Error running deptective-files-exist:\n\n{result.output.decode("utf-8")}\n\n"
+                        f"Error running deptective-files-exist:\n\n{result.output.decode('utf-8')}\n\n"
                         f"Inputs: {' '.join(unique_paths)})"
                     )
                     logger.error(error_message)
