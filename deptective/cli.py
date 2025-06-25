@@ -5,7 +5,7 @@ import shlex
 import sys
 from collections import defaultdict
 from shutil import rmtree
-from tempfile import TemporaryDirectory
+from tempfile import mkdtemp
 from textwrap import dedent
 from typing import List, Optional
 
@@ -292,7 +292,7 @@ def main() -> int:
     old_stdout = sys.stdout
 
     success = False
-    temp_logdir: Optional[TemporaryDirectory] = None
+    temp_logdir: Optional[Path] = None
 
     try:
 
@@ -319,10 +319,8 @@ def main() -> int:
         if hasattr(args, "log_dir") and args.log_dir:
             log_dir: Path = args.log_dir
         else:
-            temp_logdir = TemporaryDirectory(
-                prefix="deptective-", delete=False, ignore_cleanup_errors=True
-            )
-            log_dir = Path(temp_logdir.name)
+            temp_logdir = Path(mkdtemp(prefix="deptective-"))
+            log_dir = temp_logdir
 
         if log_dir.exists():
             if args.force:
@@ -440,7 +438,7 @@ def main() -> int:
         return 1
     finally:
         if not success and temp_logdir is not None:
-            old_stdout.write(f"\n\nA log was saved to {temp_logdir.name!s}\n")
+            old_stdout.write(f"\n\nA log was saved to {temp_logdir!s}\n")
 
     for sbom in results:
         old_stdout.write(str(sbom))
@@ -448,6 +446,6 @@ def main() -> int:
     old_stdout.flush()
 
     if temp_logdir is not None:
-        temp_logdir.cleanup()
+        rmtree(temp_logdir)
 
     return 0
