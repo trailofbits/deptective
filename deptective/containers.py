@@ -150,7 +150,7 @@ class Container:
                     base_name = parent
                 image_name = f"{base_name}-{randomname.get_name()}"
             parent = self.client.images.get(parent)
-        self.parent = parent
+        self.parent: Union[Self, Image] = parent
         if isinstance(parent, Container):
             self.level: int = parent.level + 1
             if image_name is None:

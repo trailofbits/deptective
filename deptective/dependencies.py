@@ -622,7 +622,7 @@ class SBOMGeneratorStep(Container):
             )
             retval, output = self.generator.cache.package_manager.update(container)
             if retval != 0:
-                raise ValueError(f"Error updating packages: {output}")
+                raise ValueError(f"Error updating packages: {output!r}")
             # add the command and its relevant arguments to the missing files:
             for arg in self.args:
                 if arg.startswith("/"):
@@ -647,7 +647,7 @@ class SBOMGeneratorStep(Container):
             )
             if retval != 0:
                 raise PreinstallError(
-                    f"Error installing {' '.join(self.preinstall)}: {output}", output
+                    f"Error installing {' '.join(self.preinstall)}: {output!r}", output
                 )
 
     def complete_task(self):
