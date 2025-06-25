@@ -11,18 +11,19 @@ from deptective.dependencies import SBOMGenerationError, PackageResolutionError
 class LoggingTests(TestCase):
     def test_temporary_log_dir_creation(self):
         """Test that a temporary log directory is created when no log_dir is specified"""
-        with patch('deptective.cli.TemporaryDirectory') as mock_tempdir, \
+        with patch('deptective.cli.mkdtemp') as mock_mkdtemp, \
+             patch('deptective.cli.rmtree') as mock_rmtree, \
              patch('deptective.cli.SBOMGenerator'), \
              patch('deptective.cli.load_cache'), \
              patch('sys.argv', ['deptective', 'echo', 'test']):
             
-            mock_tempdir.return_value.name = '/tmp/deptective-test'
+            mock_mkdtemp.return_value = '/tmp/deptective-test'
             # Mock an exception to return immediately
             with patch('deptective.cli.main', return_value=0):
                 main()
             
             # Verify temporary directory was created
-            mock_tempdir.assert_called_once()
+            mock_mkdtemp.assert_called_once_with(prefix="deptective-")
 
     def test_log_dir_override(self):
         """Test that the --force option correctly handles log directory"""
