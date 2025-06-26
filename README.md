@@ -39,7 +39,7 @@ and Deptective will automatically determine all of the requirements necessary to
 If you know the specific file you are missing and you want to see all of the packages that provide that file, you
 can use the `-s` option:
 ```console
-$ deptective /usr/bin/transmission-gtk
+$ deptective -s /usr/bin/transmission-gtk
 [10:13:02] INFO     Packages providing /usr/bin/transmission-gtk: transmission-gtk         cli.py:276
 ```
 
