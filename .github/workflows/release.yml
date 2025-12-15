@@ -36,7 +36,7 @@ jobs:
       - build-release
     steps:
       - name: fetch dists
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: deptective-dists
           path: dist/
