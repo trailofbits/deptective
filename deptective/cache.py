@@ -156,12 +156,10 @@ class SQLCache(Cache, ABC):
     def _create_tables(self):
         assert self.conn is not None
         cur = self.conn.cursor()
-        cur.execute(
-            """CREATE TABLE files(
+        cur.execute("""CREATE TABLE files(
             filename TEXT NOT NULL,
             package TEXT NOT NULL
-        )"""
-        )
+        )""")
         cur.execute("CREATE INDEX filenames ON files(filename)")
         cur.execute("CREATE INDEX packages ON files(package)")
         self.conn.commit()
