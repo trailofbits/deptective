@@ -20,7 +20,7 @@ dependencies = [
     "appdirs ~= 1.4.4",
     "docker ~= 7.1.0",
     "randomname ~= 0.2.1",
-    "rich ~= 13.4.2",
+    "rich >= 13.4.2,< 15.1.0",
     "typing-extensions ~= 4.12.2;python_version<'3.11'"
 ]
 requires_python = ">=3.10"
