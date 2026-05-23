@@ -21,7 +21,7 @@ jobs:
         run: make dist
 
       - name: Upload distributions
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: deptective-dists
           path: dist/
