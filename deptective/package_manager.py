@@ -12,7 +12,32 @@ from .containers import DockerContainer
 T = TypeVar("T")
 
 
+_OS_RELEASE_LINE = re.compile(
+    r'\s*(?P<var>\S+)\s*=\s*'
+    r'("(?P<quoted>[^"]*)"|\'(?P<singlequoted>[^\']*)\'|(?P<unquoted>\S*))\s*'
+)
+
+
+def parse_os_release_line(line: str) -> "Optional[Tuple[str, str]]":
+    """Parse a single os-release line into a (lowercased var, value) pair.
+
+    Handles double-quoted, single-quoted, and unquoted values. Returns None
+    for lines that do not match a ``VAR=value`` assignment.
+    """
+    m = _OS_RELEASE_LINE.match(line.strip())
+    if m is None:
+        return None
+    if m["quoted"] is not None:
+        value = m["quoted"]
+    elif m["singlequoted"] is not None:
+        value = m["singlequoted"]
+    else:
+        value = m["unquoted"]
+    return m["var"].lower(), value
+
+
 @dataclass(eq=True, frozen=True, unsafe_hash=True)
+
 class PackagingConfig:
     os: str
     os_version: str
@@ -26,36 +51,20 @@ class PackagingConfig:
         arch = platform.machine().lower()
         os_release_path = Path("/etc/os-release")
         if os_release_path.exists():
-            var_pattern = re.compile(
-                r"\s*(?P<var>\S+)\s*=\s*(\"(?P<quoted>[^\"])*\"|(?P<unquoted>\S*)|\'(?P<singlequoted>[^\'])*\')\s*"
-            )
             version_id: Optional[str] = None
             version_codename: Optional[str] = None
             with open(os_release_path, "r") as f:
                 for line in f:
-                    line = line.strip()
-                    m = var_pattern.match(line)
-                    if m:
-                        var = m["var"].lower()
-                        quoted, unquoted, singlequoted = (
-                            m["quoted"],
-                            m["unquoted"],
-                            m["singlequoted"],
-                        )
-                        if quoted is not None:
-                            value = quoted
-                        elif unquoted is not None:
-                            value = unquoted
-                        elif singlequoted is not None:
-                            value = singlequoted
-                        else:
-                            continue
-                        if var == "id":
-                            local_os = value
-                        elif var == "version_id":
-                            version_id = value
-                        elif var == "version_codename":
-                            version_codename = value
+                    parsed = parse_os_release_line(line)
+                    if parsed is None:
+                        continue
+                    var, value = parsed
+                    if var == "id":
+                        local_os = value
+                    elif var == "version_id":
+                        version_id = value
+                    elif var == "version_codename":
+                        version_codename = value
             if version_codename:
                 local_release = version_codename
             elif version_id:
